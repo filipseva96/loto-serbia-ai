@@ -7,3 +7,8 @@ joblib
 python-dateutil
 scipy
 streamlit
+sqlalchemy
+fastapi
+uvicorn
+python-dateutil
+scikit-learn
