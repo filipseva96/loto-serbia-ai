@@ -37,6 +37,9 @@ MIN_NUMBER = 1
 MAX_NUMBER = 39
 NUMBERS_PER_DRAW = 7
 
+# Serbia Loto 7/39 does NOT have a bonus number (unlike some other lotteries)
+HAS_BONUS = False
+
 # Draw days (Monday=0, Tuesday=1, ..., Sunday=6)
 # Serbia Loto 7/39 draws on: Monday, Wednesday, Thursday
 DRAW_DAYS = [0, 2, 3]  # Monday, Wednesday, Thursday
@@ -98,5 +101,6 @@ logger.info(f"Data directory: {DATA_DIR}")
 logger.info(f"Database path: {DB_PATH}")
 logger.info(f"Number range: ({MIN_NUMBER}, {MAX_NUMBER})")
 logger.info(f"Draw days: {DRAW_DAYS}")
+logger.info(f"Has bonus number: {HAS_BONUS}")
 if not SCRAPING_ENABLED:
     logger.warning("Scraping is DISABLED (Cloud environment)")
