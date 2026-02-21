@@ -37,21 +37,34 @@ MIN_NUMBER = 1
 MAX_NUMBER = 39
 NUMBERS_PER_DRAW = 7
 
-# Number range tuple (for compatibility with existing code)
+# Number range tuple (for compatibility)
 NUMBER_RANGE = (MIN_NUMBER, MAX_NUMBER)
+
+# All valid numbers (for validation)
+VALID_NUMBERS = list(range(MIN_NUMBER, MAX_NUMBER + 1))
 
 # Serbia Loto 7/39 does NOT have a bonus number
 HAS_BONUS = False
 BONUS_MIN = None
 BONUS_MAX = None
+BONUS_RANGE = None
 
 # Draw days (Monday=0, Tuesday=1, ..., Sunday=6)
 # Serbia Loto 7/39 draws on: Monday, Wednesday, Thursday
 DRAW_DAYS = [0, 2, 3]
 
+# Draw timing (Serbia time - CET/CEST)
+DRAW_HOUR = 21  # 9 PM
+DRAW_MINUTE = 0
+DRAW_TIMEZONE = "Europe/Belgrade"
+
 # Game info
 GAME_NAME = "Loto 7/39"
 GAME_COUNTRY = "Serbia"
+GAME_ID = 1  # lutrija.rs gameNo parameter
+
+# Draw frequency
+DRAWS_PER_WEEK = 3
 
 # ============================================================================
 # SCRAPING CONFIGURATION
@@ -110,6 +123,7 @@ logger.info(f"Data directory: {DATA_DIR}")
 logger.info(f"Database path: {DB_PATH}")
 logger.info(f"Number range: {NUMBER_RANGE}")
 logger.info(f"Draw days: {DRAW_DAYS}")
+logger.info(f"Draw time: {DRAW_HOUR:02d}:{DRAW_MINUTE:02d} {DRAW_TIMEZONE}")
 logger.info(f"Has bonus number: {HAS_BONUS}")
 if not SCRAPING_ENABLED:
     logger.warning("Scraping is DISABLED (Cloud environment)")
