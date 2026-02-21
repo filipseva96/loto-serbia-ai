@@ -1,17 +1,16 @@
 """
-Production model - imports from core.models
-Kept for backward compatibility
+Production model - redirects to core.models
 """
 from lotto_ai.core.models import (
+    generate_optimized_portfolio,
     generate_adaptive_portfolio,
-    portfolio_statistics,
-    generate_ticket_safe,
-    frequency_probability
+    frequency_analysis
 )
+from lotto_ai.core.coverage_optimizer import portfolio_statistics
 
 __all__ = [
+    'generate_optimized_portfolio',
     'generate_adaptive_portfolio',
     'portfolio_statistics',
-    'generate_ticket_safe',
-    'frequency_probability'
+    'frequency_analysis'
 ]

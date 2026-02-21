@@ -2,7 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="lotto_ai",
-    version="2.0.0",
+    version="3.0.0",
+    description="Loto Serbia Smart Portfolio Manager - Coverage optimization with mathematical guarantees",
     packages=find_packages(),
     install_requires=[
         'numpy>=1.24.0',
@@ -15,7 +16,5 @@ setup(
         'beautifulsoup4>=4.12.0',
         'PyPDF2>=3.0.0',
         'python-dateutil>=2.8.2',
-        'fastapi>=0.104.0',
-        'uvicorn>=0.24.0'
     ]
 )

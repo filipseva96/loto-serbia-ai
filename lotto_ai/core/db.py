@@ -1,18 +1,19 @@
 """
-Database layer for Loto Serbia
+Database layer for Loto Serbia - Enhanced with coverage tracking
 """
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from lotto_ai.config import DB_PATH, logger, HAS_BONUS
+from lotto_ai.config import DB_PATH, logger
 
 Base = declarative_base()
 
+
 class Draw(Base):
     __tablename__ = 'draws'
-    
+
     draw_date = Column(String, primary_key=True)
-    round_number = Column(Integer)  # ✅ NEW: "коло" (round)
+    round_number = Column(Integer, nullable=True)
     n1 = Column(Integer)
     n2 = Column(Integer)
     n3 = Column(Integer)
@@ -20,11 +21,14 @@ class Draw(Base):
     n5 = Column(Integer)
     n6 = Column(Integer)
     n7 = Column(Integer)
-    # ✅ REMOVED: bonus column (not used in Serbia)
+
+    def get_numbers(self):
+        return [self.n1, self.n2, self.n3, self.n4, self.n5, self.n6, self.n7]
+
 
 class Prediction(Base):
     __tablename__ = 'predictions'
-    
+
     prediction_id = Column(Integer, primary_key=True, autoincrement=True)
     created_at = Column(String, nullable=False)
     target_draw_date = Column(String, nullable=False)
@@ -34,12 +38,13 @@ class Prediction(Base):
     tickets = Column(Text, nullable=False)
     model_metadata = Column(Text)
     evaluated = Column(Boolean, default=False)
-    
+
     results = relationship("PredictionResult", back_populates="prediction")
+
 
 class PredictionResult(Base):
     __tablename__ = 'prediction_results'
-    
+
     result_id = Column(Integer, primary_key=True, autoincrement=True)
     prediction_id = Column(Integer, ForeignKey('predictions.prediction_id'))
     actual_numbers = Column(Text, nullable=False)
@@ -48,21 +53,23 @@ class PredictionResult(Base):
     total_matches = Column(Integer)
     prize_value = Column(Float)
     ticket_matches = Column(Text)
-    
+
     prediction = relationship("Prediction", back_populates="results")
+
 
 class PlayedTicket(Base):
     __tablename__ = 'played_tickets'
-    
+
     play_id = Column(Integer, primary_key=True, autoincrement=True)
     prediction_id = Column(Integer, ForeignKey('predictions.prediction_id'))
     ticket_numbers = Column(Text, nullable=False)
     played_at = Column(String, nullable=False)
     draw_date = Column(String, nullable=False)
 
+
 class AdaptiveWeight(Base):
     __tablename__ = 'adaptive_weights'
-    
+
     weight_id = Column(Integer, primary_key=True, autoincrement=True)
     updated_at = Column(String, nullable=False)
     strategy_name = Column(String, nullable=False)
@@ -71,9 +78,40 @@ class AdaptiveWeight(Base):
     performance_score = Column(Float)
     n_observations = Column(Integer, default=0)
 
+
+class FairnessTest(Base):
+    """Store statistical fairness test results"""
+    __tablename__ = 'fairness_tests'
+
+    test_id = Column(Integer, primary_key=True, autoincrement=True)
+    tested_at = Column(String, nullable=False)
+    test_name = Column(String, nullable=False)
+    statistic_value = Column(Float)
+    p_value = Column(Float)
+    conclusion = Column(String)
+    n_draws_tested = Column(Integer)
+    details = Column(Text)
+
+
+class CoverageAnalysis(Base):
+    """Store portfolio coverage analysis"""
+    __tablename__ = 'coverage_analyses'
+
+    analysis_id = Column(Integer, primary_key=True, autoincrement=True)
+    prediction_id = Column(Integer, ForeignKey('predictions.prediction_id'))
+    analyzed_at = Column(String, nullable=False)
+    pair_coverage = Column(Float)
+    triple_coverage = Column(Float)
+    number_coverage = Column(Float)
+    avg_overlap = Column(Float)
+    diversity_score = Column(Float)
+    expected_3plus_prob = Column(Float)
+
+
 # Database engine
 engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
 SessionLocal = sessionmaker(bind=engine)
+
 
 def init_db():
     """Initialize database tables"""
@@ -83,6 +121,7 @@ def init_db():
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
+
 
 def get_session():
     """Get database session"""

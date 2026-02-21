@@ -1,61 +1,42 @@
 """
-Pure frequency-based model using Maximum Likelihood Estimation
-No overfitting, just empirical probability distribution
+Statistical analysis models - for DISPLAY only, not prediction.
+Honest about what frequency analysis can and cannot do.
 """
 import pandas as pd
 import numpy as np
 
-def frequency_probability(features, smoothing=0.5):
+
+def frequency_analysis_display(features):
     """
-    Calculate probability using Laplace smoothing
-    
-    P(number) = (hits + α) / (total_draws + α * n_numbers)
-    
-    Args:
-        smoothing: Laplace smoothing parameter (prevents zero probabilities)
+    Calculate empirical frequencies for display.
+    NOT predictive - shown alongside disclaimer.
     """
     grouped = features.groupby("number")["hit"].agg(["sum", "count"])
-    
     n_numbers = len(grouped)
-    
-    # Laplace smoothing
-    grouped["freq_prob"] = (
-        (grouped["sum"] + smoothing) /
-        (grouped["count"] + smoothing * n_numbers)
+    grouped["frequency"] = grouped["sum"] / grouped["count"]
+    grouped["expected"] = 7.0 / 39.0
+    grouped["deviation_pct"] = (
+        (grouped["frequency"] - grouped["expected"]) / grouped["expected"] * 100
     )
-    
-    return grouped["freq_prob"]
+    return grouped
 
-def gap_weighted_probability(features, decay=0.95):
-    """
-    Weight recent draws more heavily using exponential decay
-    
-    More recent gaps → higher probability
-    """
-    latest = features.groupby("number").apply(
-        lambda g: g.nlargest(1, "draw_index")["gap"].values[0]
-    )
-    
-    # Convert gap to recency weight
-    # Smaller gap = more recent = lower weight
-    # We want LARGER gaps to have HIGHER probability (overdue numbers)
-    weights = latest.apply(lambda gap: decay ** (-gap))
-    
-    # Normalize
-    return weights / weights.sum()
 
-def hot_cold_probability(features, window=20):
+def hot_cold_display(features, window=20):
     """
-    Combine 'hot' (recently frequent) and 'cold' (overdue) numbers
+    Show which numbers are 'hot' (recent) vs 'cold' (overdue).
+    FOR ENTERTAINMENT ONLY - these have no predictive power.
     """
     recent = features[features["draw_index"] >= features["draw_index"].max() - window]
-    
-    hot = recent.groupby("number")["hit"].sum()
-    cold = features.groupby("number")["gap"].last()
-    
-    # Normalize both
-    hot_norm = hot / hot.sum()
-    cold_norm = cold / cold.sum()
-    
-    # 50/50 blend
-    return 0.5 * hot_norm + 0.5 * cold_norm
+
+    hot = recent.groupby("number")["hit"].sum().sort_values(ascending=False)
+    cold = features.groupby("number")["gap"].last().sort_values(ascending=False)
+
+    return {
+        'hot_numbers': hot.head(10).index.tolist(),
+        'cold_numbers': cold.head(10).index.tolist(),
+        'disclaimer': (
+            "Hot/cold numbers are DESCRIPTIVE only. "
+            "A fair lottery has no memory - each draw is independent. "
+            "Past frequency does NOT predict future results."
+        )
+    }

@@ -1,7 +1,10 @@
-streamlit
+numpy
+pandas
+scikit-learn
+scipy
 sqlalchemy
+streamlit
 requests
 beautifulsoup4
+PyPDF2
 python-dateutil
-pandas
-numpy
