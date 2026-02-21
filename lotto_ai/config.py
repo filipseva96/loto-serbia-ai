@@ -37,12 +37,21 @@ MIN_NUMBER = 1
 MAX_NUMBER = 39
 NUMBERS_PER_DRAW = 7
 
-# Serbia Loto 7/39 does NOT have a bonus number (unlike some other lotteries)
+# Number range tuple (for compatibility with existing code)
+NUMBER_RANGE = (MIN_NUMBER, MAX_NUMBER)
+
+# Serbia Loto 7/39 does NOT have a bonus number
 HAS_BONUS = False
+BONUS_MIN = None
+BONUS_MAX = None
 
 # Draw days (Monday=0, Tuesday=1, ..., Sunday=6)
 # Serbia Loto 7/39 draws on: Monday, Wednesday, Thursday
-DRAW_DAYS = [0, 2, 3]  # Monday, Wednesday, Thursday
+DRAW_DAYS = [0, 2, 3]
+
+# Game info
+GAME_NAME = "Loto 7/39"
+GAME_COUNTRY = "Serbia"
 
 # ============================================================================
 # SCRAPING CONFIGURATION
@@ -99,7 +108,7 @@ logger = logging.getLogger("lotto_ai.config")
 logger.info(f"Environment: Cloud={IS_CLOUD}, Railway={IS_RAILWAY}, Streamlit={IS_STREAMLIT_CLOUD}")
 logger.info(f"Data directory: {DATA_DIR}")
 logger.info(f"Database path: {DB_PATH}")
-logger.info(f"Number range: ({MIN_NUMBER}, {MAX_NUMBER})")
+logger.info(f"Number range: {NUMBER_RANGE}")
 logger.info(f"Draw days: {DRAW_DAYS}")
 logger.info(f"Has bonus number: {HAS_BONUS}")
 if not SCRAPING_ENABLED:
