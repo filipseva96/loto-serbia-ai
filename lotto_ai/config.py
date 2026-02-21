@@ -1,54 +1,102 @@
 """
 Configuration for Loto Serbia AI
 """
-from pathlib import Path
 import os
 import logging
+from pathlib import Path
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Environment detection
-IS_CLOUD = os.getenv("CLOUD_ENV", "0") == "1"
+# ============================================================================
+# ENVIRONMENT DETECTION
+# ============================================================================
 IS_RAILWAY = os.getenv("RAILWAY_ENVIRONMENT") is not None
-IS_STREAMLIT = os.getenv("STREAMLIT_RUNTIME") is not None
+IS_STREAMLIT_CLOUD = os.getenv("STREAMLIT_SHARING_MODE") is not None or \
+                     os.getenv("STREAMLIT_RUNTIME_ENVIRONMENT") == "cloud"
+IS_CLOUD = IS_RAILWAY or IS_STREAMLIT_CLOUD
 
-# Base directories
-if IS_RAILWAY:
-    BASE_DIR = Path("/app/data")
-elif IS_STREAMLIT or IS_CLOUD:
-    BASE_DIR = Path("/tmp")
+# ============================================================================
+# PATHS
+# ============================================================================
+if IS_CLOUD:
+    # Cloud: use /tmp or mounted volume
+    BASE_DIR = Path("/mount/src/loto-serbia-ai") if IS_STREAMLIT_CLOUD else Path("/app")
+    DATA_DIR = BASE_DIR / "data"
 else:
-    BASE_DIR = Path(__file__).resolve().parent.parent / "data"
+    # Local: use project directory
+    BASE_DIR = Path(__file__).parent.parent
+    DATA_DIR = BASE_DIR / "data"
 
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure data directory exists
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Database path
-DB_PATH = BASE_DIR / "loto_serbia.db"
+DB_PATH = DATA_DIR / "loto_serbia.db"
 
-# Models directory
-MODELS_DIR = Path(__file__).resolve().parent / "models"
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-# ⚠️ SERBIA-SPECIFIC CONFIGURATION
-SCRAPING_ENABLED = True  # Always enabled (PDF parsing)
-BASE_URL = "https://lutrija.rs/Results/OfficialReports?gameNo=1"
-
-# Game parameters
-NUMBER_RANGE = (1, 39)  # ✅ Changed from (1, 50)
+# ============================================================================
+# LOTTERY CONFIGURATION - SERBIA LOTO 7/39
+# ============================================================================
+MIN_NUMBER = 1
+MAX_NUMBER = 39
 NUMBERS_PER_DRAW = 7
-HAS_BONUS = False  # ✅ No bonus number
 
-# Draw schedule (Serbia: Tue/Thu/Fri)
-DRAW_DAYS = [1, 3, 4]  # Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4
-DRAW_HOUR = 21  # 9:00 PM
+# Draw days (Monday=0, Tuesday=1, ..., Sunday=6)
+# Serbia Loto 7/39 draws on: Monday, Wednesday, Thursday
+DRAW_DAYS = [0, 2, 3]  # Monday, Wednesday, Thursday
 
-logger.info(f"Environment: Cloud={IS_CLOUD}, Railway={IS_RAILWAY}, Streamlit={IS_STREAMLIT}")
-logger.info(f"Data directory: {BASE_DIR}")
+# ============================================================================
+# SCRAPING CONFIGURATION
+# ============================================================================
+BASE_URL = "https://lutrija.rs/Results/OfficialReports?gameNo=1"
+SCRAPING_ENABLED = not IS_STREAMLIT_CLOUD  # Disable scraping on Streamlit Cloud
+
+# Scraping schedule (for automated updates)
+SCRAPE_INTERVAL_HOURS = 24  # Check for new draws daily
+MAX_RETRIES = 3
+TIMEOUT_SECONDS = 20
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+# Feature engineering
+LOOKBACK_WINDOW = 20  # Analyze last 20 draws for patterns
+MIN_DRAWS_FOR_TRAINING = 50  # Minimum draws needed to train model
+
+# Portfolio generation
+DEFAULT_TICKETS = 10
+MAX_TICKETS = 50
+USE_ADAPTIVE_DEFAULT = True
+
+# Model parameters
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+CV_FOLDS = 5
+
+# ============================================================================
+# UI CONFIGURATION
+# ============================================================================
+APP_TITLE = "🇷🇸 Loto Serbia AI Predictor"
+APP_ICON = "🎰"
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+LOG_LEVEL = logging.DEBUG if not IS_CLOUD else logging.INFO
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Configure logger
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format=LOG_FORMAT,
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger("lotto_ai.config")
+
+# Log environment info
+logger.info(f"Environment: Cloud={IS_CLOUD}, Railway={IS_RAILWAY}, Streamlit={IS_STREAMLIT_CLOUD}")
+logger.info(f"Data directory: {DATA_DIR}")
 logger.info(f"Database path: {DB_PATH}")
-logger.info(f"Number range: {NUMBER_RANGE}")
+logger.info(f"Number range: ({MIN_NUMBER}, {MAX_NUMBER})")
 logger.info(f"Draw days: {DRAW_DAYS}")
+if not SCRAPING_ENABLED:
+    logger.warning("Scraping is DISABLED (Cloud environment)")
