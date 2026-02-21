@@ -22,4 +22,4 @@ Visit: [https://your-app.streamlit.app](https://your-app.streamlit.app)
 pip install -r requirements.txt
 
 # Run the app
-streamlit run lotto_ai/gui/web_app.py
+streamlit run lotto_ai/gui/app.py"# loto-serbia-ai" 
