@@ -10,15 +10,21 @@ from math import comb
 # ENVIRONMENT DETECTION
 # ============================================================================
 IS_RAILWAY = os.getenv("RAILWAY_ENVIRONMENT") is not None
-IS_STREAMLIT_CLOUD = os.getenv("STREAMLIT_SHARING_MODE") is not None or \
-                     os.getenv("STREAMLIT_RUNTIME_ENVIRONMENT") == "cloud"
+IS_STREAMLIT_CLOUD = (
+    os.getenv("STREAMLIT_SHARING_MODE") is not None or
+    os.getenv("STREAMLIT_RUNTIME_ENVIRONMENT") == "cloud" or
+    os.path.exists("/mount/src")  # Streamlit Cloud mounts repos here
+)
 IS_CLOUD = IS_RAILWAY or IS_STREAMLIT_CLOUD
 
 # ============================================================================
 # PATHS
 # ============================================================================
-if IS_CLOUD:
-    BASE_DIR = Path("/mount/src/loto-serbia-ai") if IS_STREAMLIT_CLOUD else Path("/app")
+if IS_STREAMLIT_CLOUD:
+    BASE_DIR = Path("/mount/src/loto-serbia-ai")
+    DATA_DIR = BASE_DIR / "data"
+elif IS_RAILWAY:
+    BASE_DIR = Path("/app")
     DATA_DIR = BASE_DIR / "data"
 else:
     BASE_DIR = Path(__file__).parent.parent
@@ -67,7 +73,6 @@ TICKET_COST = 100
 # ============================================================================
 TOTAL_COMBINATIONS = comb(MAX_NUMBER, NUMBERS_PER_DRAW)  # 15,380,937
 
-# Pre-calculate expected value for logging
 def _calc_ev():
     ev = 0.0
     for k, prize in PRIZE_TABLE.items():
