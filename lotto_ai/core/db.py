@@ -1,11 +1,10 @@
 """
-Database layer using SQLAlchemy for safer access
+Database layer for Loto Serbia
 """
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from lotto_ai.config import DB_PATH, logger
-import json
+from lotto_ai.config import DB_PATH, logger, HAS_BONUS
 
 Base = declarative_base()
 
@@ -13,6 +12,7 @@ class Draw(Base):
     __tablename__ = 'draws'
     
     draw_date = Column(String, primary_key=True)
+    round_number = Column(Integer)  # ✅ NEW: "коло" (round)
     n1 = Column(Integer)
     n2 = Column(Integer)
     n3 = Column(Integer)
@@ -20,7 +20,7 @@ class Draw(Base):
     n5 = Column(Integer)
     n6 = Column(Integer)
     n7 = Column(Integer)
-    bonus = Column(Integer)
+    # ✅ REMOVED: bonus column (not used in Serbia)
 
 class Prediction(Base):
     __tablename__ = 'predictions'
@@ -31,8 +31,8 @@ class Prediction(Base):
     strategy_name = Column(String, nullable=False)
     model_version = Column(String)
     portfolio_size = Column(Integer)
-    tickets = Column(Text, nullable=False)  # JSON
-    model_metadata = Column(Text)  # ✅ RENAMED from 'metadata'
+    tickets = Column(Text, nullable=False)
+    model_metadata = Column(Text)
     evaluated = Column(Boolean, default=False)
     
     results = relationship("PredictionResult", back_populates="prediction")
@@ -42,12 +42,12 @@ class PredictionResult(Base):
     
     result_id = Column(Integer, primary_key=True, autoincrement=True)
     prediction_id = Column(Integer, ForeignKey('predictions.prediction_id'))
-    actual_numbers = Column(Text, nullable=False)  # JSON
+    actual_numbers = Column(Text, nullable=False)
     evaluated_at = Column(String, nullable=False)
     best_match = Column(Integer)
     total_matches = Column(Integer)
     prize_value = Column(Float)
-    ticket_matches = Column(Text)  # JSON
+    ticket_matches = Column(Text)
     
     prediction = relationship("Prediction", back_populates="results")
 
@@ -56,7 +56,7 @@ class PlayedTicket(Base):
     
     play_id = Column(Integer, primary_key=True, autoincrement=True)
     prediction_id = Column(Integer, ForeignKey('predictions.prediction_id'))
-    ticket_numbers = Column(Text, nullable=False)  # JSON
+    ticket_numbers = Column(Text, nullable=False)
     played_at = Column(String, nullable=False)
     draw_date = Column(String, nullable=False)
 
@@ -71,7 +71,7 @@ class AdaptiveWeight(Base):
     performance_score = Column(Float)
     n_observations = Column(Integer, default=0)
 
-# Database engine and session
+# Database engine
 engine = create_engine(f'sqlite:///{DB_PATH}', echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
