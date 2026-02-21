@@ -1,12 +1,12 @@
 """
-Feature engineering for statistical analysis (NOT prediction).
-These features are used for lottery fairness testing and display only.
+Feature engineering for Loto Serbia - v3.0
 """
 import sqlite3
 import pandas as pd
+import numpy as np
 from pathlib import Path
 import sys
-from lotto_ai.config import DB_PATH, BASE_DIR, NUMBER_RANGE
+from lotto_ai.config import DB_PATH, BASE_DIR, NUMBER_RANGE, NUMBERS_PER_DRAW
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -14,19 +14,28 @@ NUMBERS = range(NUMBER_RANGE[0], NUMBER_RANGE[1] + 1)
 
 
 def load_draws():
-    """Load all draws from database"""
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql("SELECT * FROM draws ORDER BY draw_date", conn)
     conn.close()
     return df
 
 
+def load_draws_as_lists():
+    df = load_draws()
+    draws = []
+    for _, row in df.iterrows():
+        numbers = [row[f'n{i}'] for i in range(1, NUMBERS_PER_DRAW + 1)]
+        draws.append({
+            'date': row['draw_date'],
+            'numbers': sorted(numbers)
+        })
+    return draws
+
+
 def build_feature_matrix(window=10):
     """
-    Build feature matrix for statistical analysis.
-
-    NOTE: These features are for ANALYSIS and DISPLAY, not prediction.
-    In a fair lottery, none of these have predictive power.
+    Build descriptive feature matrix.
+    NOTE: These features describe PAST behavior only.
     """
     df = load_draws()
 
@@ -37,7 +46,7 @@ def build_feature_matrix(window=10):
 
     for number in NUMBERS:
         appeared = df[
-            (df[[f"n{i}" for i in range(1, 8)]] == number).any(axis=1)
+            (df[[f"n{i}" for i in range(1, NUMBERS_PER_DRAW + 1)]] == number).any(axis=1)
         ]
         hits = appeared.index.tolist()
 
@@ -55,52 +64,71 @@ def build_feature_matrix(window=10):
     return pd.DataFrame(records)
 
 
-def get_number_summary():
+def get_number_summary(n_recent=20):
     """
-    Get a summary of each number's historical performance.
-    For display purposes only.
+    Get a summary of each number's recent behavior.
+    Useful for display purposes - NOT for prediction.
+
+    Args:
+        n_recent: Number of recent draws to analyze
     """
     df = load_draws()
-
     if len(df) == 0:
-        return pd.DataFrame()
+        return {}
 
-    n_draws = len(df)
-    summary = []
+    recent = df.tail(n_recent)
+    all_data = df
 
-    for number in NUMBERS:
-        appeared = df[
-            (df[[f"n{i}" for i in range(1, 8)]] == number).any(axis=1)
-        ]
+    summary = {}
+    expected_freq = NUMBERS_PER_DRAW / (NUMBER_RANGE[1] - NUMBER_RANGE[0] + 1)
 
-        count = len(appeared)
-        frequency = count / n_draws if n_draws > 0 else 0
-        expected_freq = 7 / 39  # ~0.1795
+    for num in NUMBERS:
+        # Overall frequency
+        total_appearances = 0
+        for _, row in all_data.iterrows():
+            drawn = [int(row[f'n{i}']) for i in range(1, NUMBERS_PER_DRAW + 1)]
+            if num in drawn:
+                total_appearances += 1
 
-        # Last appearance
-        if len(appeared) > 0:
-            last_draw_idx = appeared.index[-1]
-            gap = n_draws - 1 - last_draw_idx
+        overall_freq = total_appearances / len(all_data) if len(all_data) > 0 else 0
+
+        # Recent frequency
+        recent_appearances = 0
+        for _, row in recent.iterrows():
+            drawn = [int(row[f'n{i}']) for i in range(1, NUMBERS_PER_DRAW + 1)]
+            if num in drawn:
+                recent_appearances += 1
+
+        recent_freq = recent_appearances / len(recent) if len(recent) > 0 else 0
+
+        # Current gap
+        last_seen = None
+        for idx in range(len(all_data) - 1, -1, -1):
+            row = all_data.iloc[idx]
+            drawn = [int(row[f'n{i}']) for i in range(1, NUMBERS_PER_DRAW + 1)]
+            if num in drawn:
+                last_seen = idx
+                break
+
+        current_gap = len(all_data) - 1 - last_seen if last_seen is not None else len(all_data)
+
+        # Status label
+        if recent_freq > expected_freq * 1.3:
+            status = 'HOT 🔥'
+        elif recent_freq < expected_freq * 0.7:
+            status = 'COLD ❄️'
         else:
-            gap = n_draws
+            status = 'NORMAL'
 
-        # Recent performance (last 20 draws)
-        recent_df = df.tail(20)
-        recent_appeared = recent_df[
-            (recent_df[[f"n{i}" for i in range(1, 8)]] == number).any(axis=1)
-        ]
-        recent_freq = len(recent_appeared) / min(20, n_draws)
+        summary[num] = {
+            'number': num,
+            'total_appearances': int(total_appearances),
+            'overall_frequency': float(overall_freq),
+            'recent_frequency': float(recent_freq),
+            'expected_frequency': float(expected_freq),
+            'deviation': float(overall_freq - expected_freq),
+            'current_gap': int(current_gap),
+            'status': status,
+        }
 
-        summary.append({
-            'number': number,
-            'total_appearances': count,
-            'frequency': frequency,
-            'expected_frequency': expected_freq,
-            'deviation_pct': (frequency - expected_freq) / expected_freq * 100,
-            'current_gap': gap,
-            'recent_frequency_20': recent_freq,
-            'is_hot': recent_freq > expected_freq * 1.3,
-            'is_cold': recent_freq < expected_freq * 0.7,
-        })
-
-    return pd.DataFrame(summary).sort_values('number')
+    return summary

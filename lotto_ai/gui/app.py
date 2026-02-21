@@ -520,28 +520,35 @@ elif page == "🎯 Wheeling Sistem":
     st.session_state.wheel_key_numbers = sorted(selected_key_numbers)
     n_keys = len(selected_key_numbers)
 
-    st.info(f"Izabrano: **{n_keys}** ključnih brojeva: "
-            f"{', '.join(str(n) for n in sorted(selected_key_numbers))}")
+    if n_keys > 0:
+        st.info(f"Izabrano: **{n_keys}** ključnih brojeva: "
+                f"{', '.join(str(n) for n in sorted(selected_key_numbers))}")
+    else:
+        st.warning("Izaberite bar 3 ključna broja da biste koristili wheeling sistem.")
 
-    col_w1, col_w2 = st.columns(2)
+    # Only show sliders and generate button if enough keys selected
+    if n_keys >= 3:
+        max_guarantee_hit = min(7, n_keys)
 
-    max_guarantee = min(7, n_keys) if n_keys >= 3 else 3
+        col_w1, col_w2 = st.columns(2)
 
-    with col_w1:
-        guarantee_if_hit = st.slider(
-            "Koliko vaših brojeva mora biti izvučeno",
-            min_value=3, max_value=max_guarantee,
-            value=3
-        )
+        with col_w1:
+            guarantee_if_hit = st.slider(
+                "Koliko vaših brojeva mora biti izvučeno",
+                min_value=3,
+                max_value=max_guarantee_hit,
+                value=min(3, max_guarantee_hit)
+            )
 
-    with col_w2:
-        guarantee_match = st.slider(
-            "Garantovanih pogodaka na tiketu",
-            min_value=3, max_value=guarantee_if_hit,
-            value=3
-        )
+        with col_w2:
+            guarantee_match = st.slider(
+                "Garantovanih pogodaka na tiketu",
+                min_value=3,
+                max_value=guarantee_if_hit,
+                value=min(3, guarantee_if_hit)
+            )
 
-    if n_keys >= guarantee_if_hit:
+        # Cost estimate
         estimate = wheel_cost_estimate(n_keys, guarantee_if_hit, guarantee_match)
         st.markdown(f"""
         <div class="math-box">
@@ -551,81 +558,79 @@ elif page == "🎯 Wheeling Sistem":
         </div>
         """, unsafe_allow_html=True)
 
-    max_wheel_tickets = st.slider("Maksimalan broj tiketa", 5, 100, 30)
+        max_wheel_tickets = st.slider("Maksimalan broj tiketa", 5, 100, 30)
 
-    can_generate = n_keys >= guarantee_if_hit
+        if st.button("🎯 GENERIŠI WHEELING TIKETE", type="primary"):
+            try:
+                with st.spinner("Generisanje wheeling sistema..."):
+                    tickets, guarantee = generate_abbreviated_wheel(
+                        sorted(selected_key_numbers),
+                        guarantee_if_hit=guarantee_if_hit,
+                        guarantee_match=guarantee_match,
+                        max_tickets=max_wheel_tickets
+                    )
 
-    if st.button("🎯 GENERIŠI WHEELING TIKETE", type="primary",
-                 disabled=not can_generate):
-        try:
-            with st.spinner("Generisanje wheeling sistema..."):
-                tickets, guarantee = generate_abbreviated_wheel(
-                    sorted(selected_key_numbers),
-                    guarantee_if_hit=guarantee_if_hit,
-                    guarantee_match=guarantee_match,
-                    max_tickets=max_wheel_tickets
+                if guarantee['verified']:
+                    st.success("✅ GARANCIJA VERIFIKOVANA!")
+                else:
+                    st.warning(f"⚠️ Nepotpuna garancija - {guarantee.get('warning', '')}")
+
+                st.markdown(f"""
+                <div class="good-box">
+                <strong>📜 Garancija:</strong> {guarantee['guarantee']}
+                <br>Tiketa: {guarantee['n_tickets']} |
+                Pokrivanje: {guarantee['coverage_pct']:.1f}%
+                </div>
+                """, unsafe_allow_html=True)
+
+                for i, ticket in enumerate(tickets, 1):
+                    numbers_html = ''.join(
+                        [f'<span class="number-ball">{n:02d}</span>' for n in ticket]
+                    )
+                    key_in = sum(1 for n in ticket if n in selected_key_numbers)
+                    st.markdown(
+                        f'<div class="ticket-box"><strong>Tiket {i}</strong> '
+                        f'({key_in} ključnih)<br>{numbers_html}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                # Save prediction
+                tracker = PredictionTracker()
+                next_draw = get_next_draw_date()
+                pred_id = tracker.save_prediction(
+                    target_draw_date=next_draw,
+                    strategy_name=f'wheel_{guarantee_if_hit}of{n_keys}',
+                    tickets=tickets,
+                    model_version='3.0_wheel',
+                    metadata=guarantee
+                )
+                st.caption(f"Sačuvano kao predviđanje #{pred_id}")
+
+                # Download button
+                ticket_text = (
+                    f"WHEELING SISTEM - Loto Srbija\n"
+                    f"Ključni brojevi: {sorted(selected_key_numbers)}\n"
+                    f"Garancija: {guarantee['guarantee']}\n"
+                    f"Verifikovano: {'DA' if guarantee['verified'] else 'NE'}\n"
+                    f"{'=' * 40}\n"
+                )
+                for i, ticket in enumerate(tickets, 1):
+                    ticket_text += f"Tiket {i}: {' - '.join(f'{n:02d}' for n in ticket)}\n"
+
+                st.download_button(
+                    "💾 Preuzmite Wheeling Tikete",
+                    data=ticket_text,
+                    file_name=f"wheeling_{next_draw}.txt",
+                    mime="text/plain"
                 )
 
-            if guarantee['verified']:
-                st.success("✅ GARANCIJA VERIFIKOVANA!")
-            else:
-                st.warning(f"⚠️ Nepotpuna garancija - {guarantee.get('warning', '')}")
+            except Exception as e:
+                st.error(f"Greška: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
 
-            st.markdown(f"""
-            <div class="good-box">
-            <strong>📜 Garancija:</strong> {guarantee['guarantee']}
-            <br>Tiketa: {guarantee['n_tickets']} |
-            Pokrivanje: {guarantee['coverage_pct']:.1f}%
-            </div>
-            """, unsafe_allow_html=True)
-
-            for i, ticket in enumerate(tickets, 1):
-                numbers_html = ''.join(
-                    [f'<span class="number-ball">{n:02d}</span>' for n in ticket]
-                )
-                key_in = sum(1 for n in ticket if n in selected_key_numbers)
-                st.markdown(
-                    f'<div class="ticket-box"><strong>Tiket {i}</strong> '
-                    f'({key_in} ključnih)<br>{numbers_html}</div>',
-                    unsafe_allow_html=True
-                )
-
-            tracker = PredictionTracker()
-            next_draw = get_next_draw_date()
-            pred_id = tracker.save_prediction(
-                target_draw_date=next_draw,
-                strategy_name=f'wheel_{guarantee_if_hit}of{n_keys}',
-                tickets=tickets,
-                model_version='3.0_wheel',
-                metadata=guarantee
-            )
-            st.caption(f"Sačuvano kao predviđanje #{pred_id}")
-
-            ticket_text = (
-                f"WHEELING SISTEM - Loto Srbija\n"
-                f"Ključni brojevi: {sorted(selected_key_numbers)}\n"
-                f"Garancija: {guarantee['guarantee']}\n"
-                f"Verifikovano: {'DA' if guarantee['verified'] else 'NE'}\n"
-                f"{'=' * 40}\n"
-            )
-            for i, ticket in enumerate(tickets, 1):
-                ticket_text += f"Tiket {i}: {' - '.join(f'{n:02d}' for n in ticket)}\n"
-
-            st.download_button(
-                "💾 Preuzmite Wheeling Tikete",
-                data=ticket_text,
-                file_name=f"wheeling_{next_draw}.txt",
-                mime="text/plain"
-            )
-
-        except Exception as e:
-            st.error(f"Greška: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
-
-    if not can_generate and n_keys > 0:
-        st.warning(f"Izaberite bar {guarantee_if_hit} ključnih brojeva "
-                   f"(trenutno: {n_keys})")
+    elif n_keys > 0:
+        st.warning(f"Potrebno je bar 3 ključna broja. Trenutno imate: {n_keys}")
 
 # ============================================================================
 # PAGE: MATHEMATICS
@@ -718,8 +723,12 @@ elif page == "📊 Matematika":
                 })
             df_stats = pd.DataFrame(stats_list)
             st.dataframe(df_stats, hide_index=True)
+        else:
+            st.info("Nema podataka za prikaz statistike.")
     except Exception as e:
-        st.warning(f"Nema dovoljno podataka: {e}")
+        st.warning(f"Greška pri učitavanju statistike: {e}")
+        import traceback
+        logger.error(f"Number summary error: {traceback.format_exc()}")
 
 # ============================================================================
 # PAGE: FAIRNESS TEST
