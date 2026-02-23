@@ -46,7 +46,7 @@ BONUS_MIN = None
 BONUS_MAX = None
 BONUS_RANGE = None
 
-DRAW_DAYS = [0, 2, 3]  # Monday, Wednesday, Thursday
+DRAW_DAYS = [1, 4]  # Monday, Wednesday, Thursday
 DRAW_HOUR = 21
 DRAW_MINUTE = 0
 DRAW_TIMEZONE = "Europe/Belgrade"
