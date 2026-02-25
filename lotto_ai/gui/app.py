@@ -240,6 +240,34 @@ with st.sidebar:
         st.info(f"**{day_name}**\n{draw_date}")
         st.caption(f"Za {days_until} dan{'a' if days_until != 1 else ''}")
 
+        st.markdown("---")
+    st.markdown("### 📡 Podaci")
+
+    # Show data status
+    session_info = get_session()
+    try:
+        total_draws = session_info.query(Draw).count()
+        latest = session_info.query(Draw).order_by(Draw.draw_date.desc()).first()
+        latest_date = latest.draw_date if latest else "N/A"
+    finally:
+        session_info.close()
+
+    st.caption(f"📊 Izvlačenja u bazi: **{total_draws}**")
+    st.caption(f"📅 Poslednje: **{latest_date}**")
+
+    if st.button("🔄 Ažuriraj Podatke"):
+        with st.spinner("Preuzimanje novih izvlačenja..."):
+            try:
+                from lotto_ai.scraper.serbia_scraper import scrape_recent_draws
+                n_new = scrape_recent_draws(max_pdfs=20)
+                if n_new > 0:
+                    st.success(f"✅ Dodato {n_new} novih izvlačenja!")
+                    st.rerun()
+                else:
+                    st.info("Nema novih izvlačenja.")
+            except Exception as e:
+                st.error(f"Greška: {str(e)}")
+                
     st.markdown("---")
     if st.button("🚪 Odjava"):
         st.session_state["password_correct"] = False
@@ -524,29 +552,41 @@ elif page == "🎯 Wheeling Sistem":
         st.info(f"Izabrano: **{n_keys}** ključnih brojeva: "
                 f"{', '.join(str(n) for n in sorted(selected_key_numbers))}")
     else:
-        st.warning("Izaberite bar 3 ključna broja da biste koristili wheeling sistem.")
+        st.warning("Izaberite bar 4 ključna broja da biste koristili wheeling sistem.")
 
-    # Only show sliders and generate button if enough keys selected
-    if n_keys >= 3:
+    # Need at least 4 keys for wheeling to make sense
+    # (3 keys = only 1 possible 3-subset = just 1 ticket = pointless)
+    if n_keys >= 4:
         max_guarantee_hit = min(7, n_keys)
 
         col_w1, col_w2 = st.columns(2)
 
         with col_w1:
-            guarantee_if_hit = st.slider(
-                "Koliko vaših brojeva mora biti izvučeno",
-                min_value=3,
-                max_value=max_guarantee_hit,
-                value=min(3, max_guarantee_hit)
-            )
+            if max_guarantee_hit > 3:
+                guarantee_if_hit = st.slider(
+                    "Koliko vaših brojeva mora biti izvučeno",
+                    min_value=3,
+                    max_value=max_guarantee_hit,
+                    value=3
+                )
+            else:
+                # max_guarantee_hit == 3, can't make a slider
+                guarantee_if_hit = 3
+                st.markdown(f"**Koliko vaših brojeva mora biti izvučeno:** 3")
+                st.caption("(Sa 3-4 ključna broja, jedina opcija je 3)")
 
         with col_w2:
-            guarantee_match = st.slider(
-                "Garantovanih pogodaka na tiketu",
-                min_value=3,
-                max_value=guarantee_if_hit,
-                value=min(3, guarantee_if_hit)
-            )
+            if guarantee_if_hit > 3:
+                guarantee_match = st.slider(
+                    "Garantovanih pogodaka na tiketu",
+                    min_value=3,
+                    max_value=guarantee_if_hit,
+                    value=3
+                )
+            else:
+                guarantee_match = 3
+                st.markdown(f"**Garantovanih pogodaka na tiketu:** 3")
+                st.caption("(Minimum je uvek 3)")
 
         # Cost estimate
         estimate = wheel_cost_estimate(n_keys, guarantee_if_hit, guarantee_match)
@@ -595,10 +635,10 @@ elif page == "🎯 Wheeling Sistem":
                     )
 
                 # Save prediction
-                tracker = PredictionTracker()
-                next_draw = get_next_draw_date()
-                pred_id = tracker.save_prediction(
-                    target_draw_date=next_draw,
+                tracker_w = PredictionTracker()
+                next_draw_w = get_next_draw_date()
+                pred_id = tracker_w.save_prediction(
+                    target_draw_date=next_draw_w,
                     strategy_name=f'wheel_{guarantee_if_hit}of{n_keys}',
                     tickets=tickets,
                     model_version='3.0_wheel',
@@ -606,7 +646,7 @@ elif page == "🎯 Wheeling Sistem":
                 )
                 st.caption(f"Sačuvano kao predviđanje #{pred_id}")
 
-                # Download button
+                # Download
                 ticket_text = (
                     f"WHEELING SISTEM - Loto Srbija\n"
                     f"Ključni brojevi: {sorted(selected_key_numbers)}\n"
@@ -620,7 +660,7 @@ elif page == "🎯 Wheeling Sistem":
                 st.download_button(
                     "💾 Preuzmite Wheeling Tikete",
                     data=ticket_text,
-                    file_name=f"wheeling_{next_draw}.txt",
+                    file_name=f"wheeling_{next_draw_w}.txt",
                     mime="text/plain"
                 )
 
@@ -629,8 +669,11 @@ elif page == "🎯 Wheeling Sistem":
                 import traceback
                 st.code(traceback.format_exc())
 
+    elif n_keys == 3:
+        st.info("Sa samo 3 ključna broja, postoji samo 1 kombinacija trojke. "
+                "Izaberite bar **4 broja** da bi wheeling imao smisla.")
     elif n_keys > 0:
-        st.warning(f"Potrebno je bar 3 ključna broja. Trenutno imate: {n_keys}")
+        st.warning(f"Potrebno je bar 4 ključna broja. Trenutno: {n_keys}")
 
 # ============================================================================
 # PAGE: MATHEMATICS

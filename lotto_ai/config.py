@@ -90,7 +90,7 @@ _EXPECTED_VALUE = _calc_ev()
 # SCRAPING
 # ============================================================================
 BASE_URL = "https://lutrija.rs/Results/OfficialReports?gameNo=1"
-SCRAPING_ENABLED = not IS_STREAMLIT_CLOUD
+SCRAPING_ENABLED = True
 SCRAPE_INTERVAL_HOURS = 24
 MAX_RETRIES = 3
 TIMEOUT_SECONDS = 20
