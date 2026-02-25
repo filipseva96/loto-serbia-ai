@@ -1,7 +1,9 @@
 """
-Loto Serbia scraper - v3.1
-Scrapes from the Results page HTML (no more PDFs)
-Fallback to old PDF method for historical data
+Loto Serbia scraper - v3.2
+- Primary: HTML from lutrija.rs/Results
+- Retry with session and different headers
+- Graceful timeout handling
+- Clear error messages for cloud users
 """
 import requests
 import re
@@ -21,16 +23,92 @@ if __name__ == "__main__":
     project_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(project_root))
 
-from lotto_ai.config import logger, MAX_NUMBER, MIN_NUMBER, NUMBERS_PER_DRAW
+from lotto_ai.config import logger, MAX_NUMBER, MIN_NUMBER, NUMBERS_PER_DRAW, IS_CLOUD
 from lotto_ai.core.db import get_session, Draw
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+# Multiple URL variants to try
+RESULTS_URLS = [
+    "https://www.lutrija.rs/Results?gameNo=1",
+    "https://lutrija.rs/Results?gameNo=1",
+]
 
-RESULTS_URL = "https://www.lutrija.rs/Results?gameNo=1"
 OLD_BASE_URL = "https://lutrija.rs/Results/OfficialReports?gameNo=1"
+
+# Rotate user agents to avoid blocks
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+]
+
+
+def _get_session():
+    """Create a requests session with retry logic"""
+    import random
+    
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "sr-RS,sr;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+    })
+    
+    # Retry adapter
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
+    retry = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    return session
+
+
+def _fetch_page(url, timeout=30):
+    """Fetch a page with retry and multiple timeouts"""
+    session = _get_session()
+    
+    timeouts_to_try = [timeout, timeout + 15, timeout + 30]
+    last_error = None
+    
+    for t in timeouts_to_try:
+        try:
+            logger.debug(f"Fetching {url} (timeout={t}s)")
+            response = session.get(url, timeout=t)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.ConnectTimeout:
+            last_error = f"Connection timeout ({t}s)"
+            logger.warning(f"Timeout fetching {url} ({t}s), retrying...")
+            continue
+        except requests.exceptions.ReadTimeout:
+            last_error = f"Read timeout ({t}s)"
+            logger.warning(f"Read timeout {url} ({t}s), retrying...")
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"Connection error: {e}"
+            logger.warning(f"Connection error: {e}")
+            continue
+        except requests.exceptions.HTTPError as e:
+            last_error = f"HTTP error: {e}"
+            logger.warning(f"HTTP error: {e}")
+            break
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"Unexpected error: {e}")
+            break
+    
+    logger.error(f"All attempts failed for {url}: {last_error}")
+    return None
 
 
 # ============================================================================
@@ -39,44 +117,52 @@ OLD_BASE_URL = "https://lutrija.rs/Results/OfficialReports?gameNo=1"
 
 def scrape_results_page():
     """
-    Scrape latest draw results from https://www.lutrija.rs/Results?gameNo=1
-    
-    Extracts numbers from div.Rez_Brojevi_Txt_Gray elements
-    and draw date from div.Rez_Txt_Title > label
+    Scrape latest draw results from lutrija.rs/Results?gameNo=1
+    Tries multiple URL variants.
     
     Returns:
-        list of dicts: [{'round_number': int, 'draw_date': str, 'numbers': list}, ...]
-        Empty list if scraping fails
+        list of dicts with draw data, or empty list
     """
+    response = None
+    
+    for url in RESULTS_URLS:
+        logger.info(f"Trying: {url}")
+        response = _fetch_page(url)
+        if response:
+            break
+    
+    if not response:
+        logger.error("Could not reach lutrija.rs from this server")
+        return []
+    
     try:
-        logger.info(f"Scraping results from: {RESULTS_URL}")
-        response = requests.get(RESULTS_URL, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        
         soup = BeautifulSoup(response.text, 'html.parser')
-        
         results = []
         
-        # Find all draw report sections
-        # The title contains: "Извештај за 16. коло - датум извлачења 24.02.2026"
+        # Find draw titles: "Извештај за 16. коло - датум извлачења 24.02.2026"
+        title_labels = []
+        
+        # Method 1: CSS selector
         title_labels = soup.select('div.Rez_Txt_Title label')
         
+        # Method 2: Find by text pattern
         if not title_labels:
-            # Try alternative selectors
-            title_labels = soup.select('.Rez_Txt_Title label')
-        
-        if not title_labels:
-            # Try finding by text pattern
             for label in soup.find_all('label'):
                 text = label.get_text(strip=True)
-                if 'коло' in text and 'извлачења' in text:
+                if 'коло' in text and ('извлачења' in text or 'датум' in text):
                     title_labels.append(label)
+        
+        # Method 3: Find any element with the date pattern
+        if not title_labels:
+            for elem in soup.find_all(['label', 'span', 'div', 'p']):
+                text = elem.get_text(strip=True)
+                if re.search(r'\d+\.\s*коло.*\d{2}\.\d{2}\.\d{4}', text):
+                    title_labels.append(elem)
         
         logger.info(f"Found {len(title_labels)} draw title(s)")
         
         if not title_labels:
-            logger.warning("No draw titles found on results page")
-            # Try to extract just the numbers anyway
+            # Last resort: try to extract a single draw
             result = _extract_single_draw(soup)
             if result:
                 results.append(result)
@@ -84,82 +170,63 @@ def scrape_results_page():
         
         for title_label in title_labels:
             text = title_label.get_text(strip=True)
-            logger.debug(f"Processing title: {text}")
-            
-            # Extract round number and date from title
-            # Pattern: "Извештај за 16. коло - датум извлачења 24.02.2026"
-            round_number = None
-            draw_date = None
+            logger.debug(f"Processing: {text}")
             
             # Extract round number
+            round_number = None
             round_match = re.search(r'(\d+)\.\s*коло', text)
             if round_match:
                 round_number = int(round_match.group(1))
             
-            # Extract date (DD.MM.YYYY)
+            # Extract date
+            draw_date = None
             date_match = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', text)
             if date_match:
                 day, month, year = date_match.groups()
                 draw_date = f"{year}-{month}-{day}"
             
             if not draw_date:
-                logger.warning(f"Could not extract date from: {text}")
                 continue
             
-            # Validate date
             try:
                 datetime.strptime(draw_date, '%Y-%m-%d')
             except ValueError:
-                logger.warning(f"Invalid date: {draw_date}")
                 continue
             
-            # Find the numbers container near this title
-            # Navigate up to the parent section, then find number divs
+            # Find numbers
             numbers = _find_numbers_near_title(title_label, soup)
             
             if numbers and len(numbers) == NUMBERS_PER_DRAW:
-                results.append({
-                    'round_number': round_number,
-                    'draw_date': draw_date,
-                    'numbers': numbers
-                })
-                logger.info(f"✅ Extracted: {draw_date} (kolo {round_number}): {numbers}")
-            else:
-                logger.warning(f"Could not extract valid numbers for {draw_date}, "
-                             f"got: {numbers}")
+                if validate_numbers(numbers):
+                    results.append({
+                        'round_number': round_number,
+                        'draw_date': draw_date,
+                        'numbers': numbers
+                    })
+                    logger.info(f"✅ Extracted: {draw_date} "
+                              f"(kolo {round_number}): {numbers}")
         
         return results
     
-    except requests.RequestException as e:
-        logger.error(f"Network error scraping results: {e}")
-        return []
     except Exception as e:
-        logger.error(f"Error scraping results page: {e}")
+        logger.error(f"Error parsing results page: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return []
 
 
 def _find_numbers_near_title(title_element, soup):
-    """
-    Find the 7 lotto numbers associated with a draw title.
+    """Find the 7 lotto numbers near a draw title element"""
     
-    Strategy: 
-    1. Look in the parent/ancestor container for Rez_Brojevi_Txt_Gray divs
-    2. If that fails, look at siblings
-    3. If that fails, search the whole page
-    """
-    numbers = []
-    
-    # Strategy 1: Walk up to find the containing section
+    # Strategy 1: Walk up the DOM tree
     parent = title_element.parent
-    for _ in range(10):  # Walk up max 10 levels
+    for _ in range(10):
         if parent is None:
             break
         
         number_divs = parent.select('div.Rez_Brojevi_Txt_Gray')
         if number_divs:
-            # Extract numbers
+            numbers = []
             for div in number_divs:
                 text = div.get_text(strip=True)
                 try:
@@ -170,12 +237,11 @@ def _find_numbers_near_title(title_element, soup):
                     continue
             
             if len(numbers) >= NUMBERS_PER_DRAW:
-                # Take only the first 7 (in case there are JOKER numbers too)
                 return sorted(numbers[:NUMBERS_PER_DRAW])
         
         parent = parent.parent
     
-    # Strategy 2: Look at next siblings of the title's parent
+    # Strategy 2: Next siblings
     numbers = []
     parent = title_element.parent
     if parent:
@@ -194,22 +260,38 @@ def _find_numbers_near_title(title_element, soup):
                 if len(numbers) >= NUMBERS_PER_DRAW:
                     return sorted(numbers[:NUMBERS_PER_DRAW])
             
-            # Stop if we hit another title (next draw section)
             if sibling.select('div.Rez_Txt_Title'):
                 break
     
-    return sorted(numbers[:NUMBERS_PER_DRAW]) if len(numbers) >= NUMBERS_PER_DRAW else numbers
+    # Strategy 3: Find all number divs between this title and the next
+    numbers = []
+    current = title_element.parent
+    if current:
+        for elem in current.find_all_next():
+            # Stop at next title
+            if elem.get('class') and 'Rez_Txt_Title' in ' '.join(elem.get('class', [])):
+                break
+            
+            if elem.get('class') and 'Rez_Brojevi_Txt_Gray' in ' '.join(elem.get('class', [])):
+                text = elem.get_text(strip=True)
+                try:
+                    num = int(text)
+                    if MIN_NUMBER <= num <= MAX_NUMBER and num not in numbers:
+                        numbers.append(num)
+                except (ValueError, TypeError):
+                    continue
+            
+            if len(numbers) >= NUMBERS_PER_DRAW:
+                return sorted(numbers[:NUMBERS_PER_DRAW])
+    
+    return sorted(numbers) if len(numbers) == NUMBERS_PER_DRAW else []
 
 
 def _extract_single_draw(soup):
-    """
-    Fallback: extract numbers from the first set of Rez_Brojevi_Txt_Gray divs
-    on the page, regardless of section structure.
-    """
+    """Fallback: grab first set of numbers from page"""
     number_divs = soup.select('div.Rez_Brojevi_Txt_Gray')
     
     if not number_divs:
-        logger.warning("No Rez_Brojevi_Txt_Gray divs found anywhere on page")
         return None
     
     numbers = []
@@ -221,45 +303,40 @@ def _extract_single_draw(soup):
                 numbers.append(num)
         except (ValueError, TypeError):
             continue
-        
         if len(numbers) == NUMBERS_PER_DRAW:
             break
     
     if len(numbers) != NUMBERS_PER_DRAW:
-        logger.warning(f"Expected {NUMBERS_PER_DRAW} numbers, found {len(numbers)}: {numbers}")
         return None
     
     numbers = sorted(numbers)
     
-    # Try to find date
+    # Find date
     draw_date = None
     round_number = None
     
-    for label in soup.find_all('label'):
-        text = label.get_text(strip=True)
-        date_match = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', text)
-        if date_match and 'коло' in text:
-            day, month, year = date_match.groups()
-            draw_date = f"{year}-{month}-{day}"
-            
-            round_match = re.search(r'(\d+)\.\s*коло', text)
-            if round_match:
-                round_number = int(round_match.group(1))
-            break
+    page_text = soup.get_text()
     
-    # Also try from any text on page
+    # Try: "датум извлачења DD.MM.YYYY"
+    date_match = re.search(r'извлачења\s+(\d{2})\.(\d{2})\.(\d{4})', page_text)
+    if date_match:
+        day, month, year = date_match.groups()
+        draw_date = f"{year}-{month}-{day}"
+    
+    # Try: any DD.MM.YYYY near "коло"
     if not draw_date:
-        page_text = soup.get_text()
-        date_match = re.search(r'извлачења\s+(\d{2})\.(\d{2})\.(\d{4})', page_text)
+        date_match = re.search(r'коло.*?(\d{2})\.(\d{2})\.(\d{4})', page_text, re.DOTALL)
         if date_match:
             day, month, year = date_match.groups()
             draw_date = f"{year}-{month}-{day}"
     
     if not draw_date:
         draw_date = datetime.now().strftime('%Y-%m-%d')
-        logger.warning(f"Could not find date, using today: {draw_date}")
+        logger.warning(f"Using today's date as fallback: {draw_date}")
     
-    logger.info(f"✅ Fallback extracted: {draw_date} (kolo {round_number}): {numbers}")
+    round_match = re.search(r'(\d+)\.\s*коло', page_text)
+    if round_match:
+        round_number = int(round_match.group(1))
     
     return {
         'round_number': round_number,
@@ -268,20 +345,77 @@ def _extract_single_draw(soup):
     }
 
 
-def scrape_recent_draws(max_pdfs=50):
+# ============================================================================
+# MANUAL INPUT (for when scraping fails on cloud)
+# ============================================================================
+
+def add_draw_manually(draw_date, numbers, round_number=None):
     """
-    Scrape recent draws - tries new HTML method first, falls back to PDF.
+    Manually add a draw to the database.
     
     Args:
-        max_pdfs: Maximum PDFs to process (only used for PDF fallback)
+        draw_date: 'YYYY-MM-DD' format
+        numbers: list of 7 integers
+        round_number: optional round/kolo number
     
     Returns:
-        Number of new draws inserted
+        True if inserted, False if already exists or invalid
+    """
+    numbers = sorted(numbers)
+    
+    if not validate_numbers(numbers):
+        logger.error(f"Invalid numbers: {numbers}")
+        return False
+    
+    try:
+        datetime.strptime(draw_date, '%Y-%m-%d')
+    except ValueError:
+        logger.error(f"Invalid date format: {draw_date}")
+        return False
+    
+    session = get_session()
+    try:
+        existing = session.query(Draw).filter_by(draw_date=draw_date).first()
+        if existing:
+            logger.info(f"Draw {draw_date} already exists")
+            return False
+        
+        draw = Draw(
+            draw_date=draw_date,
+            round_number=round_number,
+            n1=numbers[0],
+            n2=numbers[1],
+            n3=numbers[2],
+            n4=numbers[3],
+            n5=numbers[4],
+            n6=numbers[5],
+            n7=numbers[6]
+        )
+        session.add(draw)
+        session.commit()
+        logger.info(f"✅ Manually added: {draw_date} (kolo {round_number}): {numbers}")
+        return True
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error adding draw: {e}")
+        return False
+    finally:
+        session.close()
+
+
+# ============================================================================
+# MAIN SCRAPE FUNCTION
+# ============================================================================
+
+def scrape_recent_draws(max_pdfs=50):
+    """
+    Scrape recent draws. Tries HTML first, PDF fallback.
+    Returns number of new draws inserted.
     """
     inserted_count = 0
     
-    # ---- STEP 1: Try new HTML scraper ----
-    logger.info("Trying HTML results page scraper...")
+    # Step 1: HTML scraper
+    logger.info("Trying HTML results scraper...")
     html_results = scrape_results_page()
     
     if html_results:
@@ -293,72 +427,55 @@ def scrape_recent_draws(max_pdfs=50):
                 round_number = result.get('round_number')
                 
                 if not validate_numbers(numbers):
-                    logger.warning(f"Invalid numbers for {draw_date}: {numbers}")
                     continue
                 
-                # Check if exists
                 existing = session.query(Draw).filter_by(draw_date=draw_date).first()
                 if existing:
-                    # Update round_number if we have it and existing doesn't
                     if round_number and not existing.round_number:
                         existing.round_number = round_number
                         session.commit()
-                        logger.info(f"Updated round_number for {draw_date}")
-                    else:
-                        logger.info(f"Draw {draw_date} already exists")
                     continue
                 
-                # Insert new draw
                 draw = Draw(
                     draw_date=draw_date,
                     round_number=round_number,
-                    n1=numbers[0],
-                    n2=numbers[1],
-                    n3=numbers[2],
-                    n4=numbers[3],
-                    n5=numbers[4],
-                    n6=numbers[5],
+                    n1=numbers[0], n2=numbers[1], n3=numbers[2],
+                    n4=numbers[3], n5=numbers[4], n6=numbers[5],
                     n7=numbers[6]
                 )
                 session.add(draw)
                 session.commit()
-                
-                logger.info(f"✅ Inserted draw {draw_date} "
-                          f"(kolo {round_number}): {numbers}")
                 inserted_count += 1
-        
+                logger.info(f"✅ Inserted: {draw_date} (kolo {round_number}): {numbers}")
         except Exception as e:
             session.rollback()
-            logger.error(f"Error saving HTML results: {e}")
+            logger.error(f"Error saving: {e}")
         finally:
             session.close()
     
     if inserted_count > 0:
-        logger.info(f"HTML scraper: {inserted_count} new draws inserted")
         return inserted_count
     
-    # ---- STEP 2: Fallback to PDF scraper ----
-    logger.info("HTML scraper found no new draws, trying PDF fallback...")
-    pdf_count = _scrape_from_pdfs(max_pdfs)
-    
-    total = inserted_count + pdf_count
-    logger.info(f"Scraping complete: {total} new draws total")
-    return total
+    # Step 2: PDF fallback
+    if not IS_CLOUD:
+        logger.info("Trying PDF fallback (local only)...")
+        return _scrape_from_pdfs(max_pdfs)
+    else:
+        logger.warning("Scraping failed from cloud. Use manual input or update locally.")
+        return 0
 
 
 def _scrape_from_pdfs(max_pdfs=50):
-    """Old PDF-based scraper as fallback"""
+    """Old PDF scraper"""
     js_data = extract_js_data()
-    
     if not js_data:
-        logger.warning("No PDF data found (fallback)")
         return 0
     
     session = get_session()
     inserted_count = 0
     
     try:
-        for i, report in enumerate(js_data[:max_pdfs]):
+        for report in js_data[:max_pdfs]:
             pdf_path = report.get('OfficialReportPath')
             if not pdf_path:
                 continue
@@ -377,166 +494,111 @@ def _scrape_from_pdfs(max_pdfs=50):
                 continue
             
             draw = Draw(
-                draw_date=draw_date,
-                round_number=round_number,
-                n1=numbers[0],
-                n2=numbers[1],
-                n3=numbers[2],
-                n4=numbers[3],
-                n5=numbers[4],
-                n6=numbers[5],
+                draw_date=draw_date, round_number=round_number,
+                n1=numbers[0], n2=numbers[1], n3=numbers[2],
+                n4=numbers[3], n5=numbers[4], n6=numbers[5],
                 n7=numbers[6]
             )
             session.add(draw)
             session.commit()
-            
-            logger.info(f"✅ PDF: Inserted {draw_date} (kolo {round_number}): {numbers}")
             inserted_count += 1
-    
     except Exception as e:
         session.rollback()
-        logger.error(f"Error during PDF scraping: {e}")
+        logger.error(f"PDF scraping error: {e}")
     finally:
         session.close()
     
     return inserted_count
 
 
-# ============================================================================
-# OLD PDF SCRAPER (kept for historical data)
-# ============================================================================
-
 def extract_js_data():
-    """Extract officialReportsTableData from JavaScript"""
+    """Extract PDF links from old reports page"""
+    response = _fetch_page(OLD_BASE_URL, timeout=15)
+    if not response:
+        return []
+    
     try:
-        response = requests.get(OLD_BASE_URL, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        
         match = re.search(
             r'var officialReportsTableData = (\[.*?\]);',
-            response.text,
-            re.DOTALL
+            response.text, re.DOTALL
         )
-        
         if not match:
-            logger.warning("Could not find officialReportsTableData in page")
             return []
-        
         data = json.loads(match.group(1))
         logger.info(f"Found {len(data)} official reports")
         return data
-    
     except Exception as e:
-        logger.error(f"Error extracting JS data: {e}")
+        logger.error(f"Error parsing JS data: {e}")
         return []
 
 
 def extract_numbers_from_pdf(pdf_url):
-    """Download PDF and extract winning numbers (legacy method)"""
+    """Legacy PDF extraction"""
     if PdfReader is None:
-        logger.error("PyPDF2 not installed")
+        return None
+    
+    response = _fetch_page(f"https://lutrija.rs{pdf_url}", timeout=20)
+    if not response:
         return None
     
     try:
-        full_url = f"https://lutrija.rs{pdf_url}"
-        response = requests.get(full_url, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        
-        pdf_file = io.BytesIO(response.content)
-        reader = PdfReader(pdf_file)
-        
+        reader = PdfReader(io.BytesIO(response.content))
         text = ""
         for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
         
-        # Extract round number
+        # Round number
         round_number = None
         for pattern in [r'(\d+)[\s.]*(?:редовно\s+)?(?:коло|kolo)']:
-            match = re.search(pattern, pdf_url, re.IGNORECASE)
-            if match:
-                round_number = int(match.group(1))
+            m = re.search(pattern, pdf_url, re.IGNORECASE) or \
+                re.search(pattern, text, re.IGNORECASE)
+            if m:
+                round_number = int(m.group(1))
                 break
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                round_number = int(match.group(1))
-                break
-        
-        if round_number is None:
+        if not round_number:
             return None
         
-        # Extract date
+        # Date
         draw_date = None
         for pattern in [r'(\d{2})\.(\d{2})\.(\d{4})']:
-            match = re.search(pattern, pdf_url)
-            if match:
-                day, month, year = match.groups()
-                draw_date = f"{year}-{month}-{day}"
+            m = re.search(pattern, pdf_url)
+            if m:
+                d, mo, y = m.groups()
+                draw_date = f"{y}-{mo}-{d}"
+                break
+        if not draw_date:
+            m = re.search(r'од\s+(\d{2})\.(\d{2})\.(\d{4})', text[:500])
+            if m:
+                d, mo, y = m.groups()
+                draw_date = f"{y}-{mo}-{d}"
+        if not draw_date:
+            return None
+        
+        # Numbers
+        sections = text.split('ЏОКЕР')
+        early = sections[0][:800] if len(sections) > 1 else text[:800]
+        all_nums = re.findall(r'\b([1-9]|[12]\d|3[0-9])\b', early)
+        
+        seen = []
+        for s in all_nums:
+            n = int(s)
+            if MIN_NUMBER <= n <= MAX_NUMBER and n not in seen:
+                seen.append(n)
+            if len(seen) == 7:
                 break
         
-        if not draw_date:
-            for pattern in [r'од\s+(\d{2})\.(\d{2})\.(\d{4})',
-                          r'(\d{2})\.(\d{2})\.(\d{4})\.']:
-                match = re.search(pattern, text[:500], re.IGNORECASE)
-                if match:
-                    day, month, year = match.groups()
-                    draw_date = f"{year}-{month}-{day}"
-                    break
-        
-        if not draw_date:
-            return None
-        
-        try:
-            datetime.strptime(draw_date, '%Y-%m-%d')
-        except ValueError:
-            return None
-        
-        # Extract numbers
-        patterns = [
-            r'ЛОТ\s*О\s*7\s*О\s*Д\s*39[^\n]*\n[^\d]*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)',
-            r'\([^\)]+\)\s+(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)',
-            r'^[^\d]*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$',
-        ]
-        
-        for pattern in patterns:
-            matches = list(re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL))
-            for match in matches:
-                try:
-                    nums = [int(match.group(i)) for i in range(1, 8)]
-                    if validate_numbers(nums) and nums == sorted(nums):
-                        context = text[max(0, match.start() - 150):match.end() + 50]
-                        if 'ЏОКЕР' not in context and 'Џокер' not in context:
-                            return round_number, draw_date, nums
-                except (ValueError, IndexError):
-                    continue
-        
-        # Fallback
-        sections = text.split('ЏОКЕР')
-        early_text = sections[0][:800] if len(sections) > 1 else text[:800]
-        all_nums = re.findall(r'\b([1-9]|[12]\d|3[0-9])\b', early_text)
-        
-        if len(all_nums) >= 7:
-            seen = []
-            for s in all_nums:
-                n = int(s)
-                if MIN_NUMBER <= n <= MAX_NUMBER and n not in seen:
-                    seen.append(n)
-                if len(seen) == 7:
-                    break
-            
-            if len(seen) == 7 and validate_numbers(seen):
-                return round_number, draw_date, sorted(seen)
+        if len(seen) == 7 and validate_numbers(seen):
+            return round_number, draw_date, sorted(seen)
         
         return None
-    
     except Exception as e:
-        logger.error(f"Error parsing PDF {pdf_url}: {e}")
+        logger.error(f"PDF parse error: {e}")
         return None
 
 
 def validate_numbers(numbers):
-    """Validate extracted numbers"""
     if len(numbers) != NUMBERS_PER_DRAW:
         return False
     if any(n < MIN_NUMBER or n > MAX_NUMBER for n in numbers):
@@ -546,31 +608,13 @@ def validate_numbers(numbers):
     return True
 
 
-def scrape_all_draws():
-    """Scrape full history via PDFs"""
-    return _scrape_from_pdfs(max_pdfs=1500)
-
-
-# Keep old name for backward compatibility
 parse_pdf_for_numbers = extract_numbers_from_pdf
+scrape_all_draws = lambda: _scrape_from_pdfs(max_pdfs=1500)
 
 
 if __name__ == "__main__":
     from lotto_ai.core.db import init_db
     init_db()
-    
-    print("=" * 60)
-    print("Testing HTML scraper...")
-    print("=" * 60)
-    
-    results = scrape_results_page()
-    
-    if results:
-        for r in results:
-            print(f"  {r['draw_date']} (kolo {r['round_number']}): {r['numbers']}")
-    else:
-        print("  No results from HTML scraper")
-    
-    print(f"\nInserting to database...")
+    print("Testing scraper...")
     n = scrape_recent_draws(max_pdfs=5)
     print(f"Inserted {n} new draws")

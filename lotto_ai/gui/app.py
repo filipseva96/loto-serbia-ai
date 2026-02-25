@@ -243,35 +243,58 @@ with st.sidebar:
         st.markdown("---")
     st.markdown("### 📡 Podaci")
 
-    # Show data status
     session_info = get_session()
     try:
         total_draws = session_info.query(Draw).count()
         latest = session_info.query(Draw).order_by(Draw.draw_date.desc()).first()
         latest_date = latest.draw_date if latest else "N/A"
+        latest_nums = latest.get_numbers() if latest else []
     finally:
         session_info.close()
 
-    st.caption(f"📊 Izvlačenja u bazi: **{total_draws}**")
+    st.caption(f"📊 Izvlačenja: **{total_draws}**")
     st.caption(f"📅 Poslednje: **{latest_date}**")
+    if latest_nums:
+        st.caption(f"🔢 {latest_nums}")
 
     if st.button("🔄 Ažuriraj Podatke"):
-        with st.spinner("Preuzimanje novih izvlačenja..."):
+        with st.spinner("Preuzimanje..."):
             try:
                 from lotto_ai.scraper.serbia_scraper import scrape_recent_draws
                 n_new = scrape_recent_draws(max_pdfs=20)
                 if n_new > 0:
-                    st.success(f"✅ Dodato {n_new} novih izvlačenja!")
+                    st.success(f"✅ +{n_new} novih!")
                     st.rerun()
                 else:
-                    st.info("Nema novih izvlačenja.")
+                    st.warning("Nema novih ili server nedostupan. "
+                              "Koristite ručni unos ispod.")
             except Exception as e:
                 st.error(f"Greška: {str(e)}")
-                
-    st.markdown("---")
-    if st.button("🚪 Odjava"):
-        st.session_state["password_correct"] = False
-        st.rerun()
+
+    # Manual input when scraping fails
+    with st.expander("✏️ Ručni unos izvlačenja"):
+        manual_date = st.text_input("Datum (YYYY-MM-DD)", 
+                                     placeholder="2026-02-25")
+        manual_nums = st.text_input("Brojevi (razdvojeni zarezom)", 
+                                     placeholder="1, 13, 16, 20, 25, 26, 28")
+        manual_kolo = st.text_input("Kolo (opciono)", placeholder="17")
+
+        if st.button("💾 Sačuvaj ručno"):
+            try:
+                from lotto_ai.scraper.serbia_scraper import add_draw_manually
+
+                nums = [int(x.strip()) for x in manual_nums.split(",")]
+                kolo = int(manual_kolo) if manual_kolo.strip() else None
+
+                if add_draw_manually(manual_date.strip(), nums, kolo):
+                    st.success(f"✅ Dodato: {manual_date} {sorted(nums)}")
+                    st.rerun()
+                else:
+                    st.warning("Već postoji ili nevažeći podaci")
+            except ValueError as e:
+                st.error(f"Neispravan format: {e}")
+            except Exception as e:
+                st.error(f"Greška: {e}")
 
 # ============================================================================
 # PAGE: TICKET GENERATOR
