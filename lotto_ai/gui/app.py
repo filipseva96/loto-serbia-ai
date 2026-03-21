@@ -89,26 +89,40 @@ def format_draw_info_message(draw_date, is_today, hours_until):
 
 def check_password():
     def password_entered():
+        entered = st.session_state.get("password", "")
+
         try:
             correct_password = st.secrets["app_password"]
         except Exception:
-            # Safer than hardcoding a public fallback password
-            correct_password = None
+            st.session_state["password_config_error"] = True
+            st.session_state["password_correct"] = False
+            return
 
-        entered = st.session_state.get("password", "")
-        st.session_state["password_correct"] = bool(correct_password) and entered == correct_password
-        if st.session_state["password_correct"]:
+        st.session_state["password_config_error"] = False
+
+        if entered == correct_password:
+            st.session_state["password_correct"] = True
             del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+    if "password_config_error" not in st.session_state:
+        st.session_state["password_config_error"] = False
+
+    if not st.session_state["password_correct"]:
         st.markdown("### 🔐 Loto Serbia Portfolio Optimizer - Prijava")
         st.text_input("Unesite lozinku", type="password", on_change=password_entered, key="password")
-        st.info("💡 Unesite lozinku za pristup")
+
+        if st.session_state["password_config_error"]:
+            st.error("❌ Lozinka nije podešena u Streamlit secrets.")
+            st.info('Dodajte u secrets: app_password = "your_password"')
+        elif "password" in st.session_state:
+            st.error("❌ Pogrešna lozinka")
+
         return False
-    elif not st.session_state["password_correct"]:
-        st.text_input("Unesite lozinku", type="password", on_change=password_entered, key="password")
-        st.error("❌ Pogrešna lozinka ili lozinka nije podešena u Streamlit secrets")
-        return False
+
     return True
 
 
