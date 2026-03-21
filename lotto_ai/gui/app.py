@@ -87,39 +87,66 @@ def format_draw_info_message(draw_date, is_today, hours_until):
     return f"📅 Sledeće izvlačenje: **{day_name}, {draw_date}** (za {days_until} dan{'a' if days_until != 1 else ''})"
 
 
+def get_secret_password():
+    """
+    Robust password loader.
+    Returns (password, error_message)
+    """
+    try:
+        # Temporary debug info - remove later if you want
+        if "debug_secrets_checked" not in st.session_state:
+            st.session_state["debug_secrets_checked"] = True
+            try:
+                secret_keys = list(st.secrets.keys())
+                logger.info(f"Streamlit secrets keys available: {secret_keys}")
+            except Exception as e:
+                logger.error(f"Could not inspect st.secrets keys: {e}")
+
+        if "app_password" not in st.secrets:
+            return None, "Lozinka nije pronađena u Streamlit secrets pod ključem 'app_password'."
+
+        value = st.secrets["app_password"]
+
+        if value is None:
+            return None, "app_password postoji ali je None."
+
+        value = str(value).strip()
+        if not value:
+            return None, "app_password postoji ali je prazan string."
+
+        return value, None
+
+    except Exception as e:
+        return None, f"Greška pri čitanju secrets: {e}"
+
+
 def check_password():
-    def password_entered():
-        entered = st.session_state.get("password", "")
-
-        try:
-            correct_password = st.secrets["app_password"]
-        except Exception:
-            st.session_state["password_config_error"] = True
-            st.session_state["password_correct"] = False
-            return
-
-        st.session_state["password_config_error"] = False
-
-        if entered == correct_password:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
-    if "password_config_error" not in st.session_state:
-        st.session_state["password_config_error"] = False
+
+    correct_password, secret_error = get_secret_password()
 
     if not st.session_state["password_correct"]:
         st.markdown("### 🔐 Loto Serbia Portfolio Optimizer - Prijava")
-        st.text_input("Unesite lozinku", type="password", on_change=password_entered, key="password")
+        entered = st.text_input("Unesite lozinku", type="password", key="password_input")
 
-        if st.session_state["password_config_error"]:
+        if secret_error:
             st.error("❌ Lozinka nije podešena u Streamlit secrets.")
-            st.info('Dodajte u secrets: app_password = "your_password"')
-        elif "password" in st.session_state:
-            st.error("❌ Pogrešna lozinka")
+            st.caption(secret_error)
+
+            if not IS_CLOUD:
+                st.info('Lokalno napravite `.streamlit/secrets.toml` sa: app_password = "your_password"')
+            else:
+                st.info('Na Streamlit Cloud-u otvorite App Settings → Secrets i dodajte: app_password = "your_password"')
+            return False
+
+        if st.button("Prijava", type="primary"):
+            if entered == correct_password:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("❌ Pogrešna lozinka")
+                return False
 
         return False
 
