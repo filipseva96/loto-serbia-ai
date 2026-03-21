@@ -1,16 +1,15 @@
 """
-Adaptive learning - v3.0
-Tracks portfolio STRATEGY performance, not lottery patterns.
+Adaptive portfolio learner - v4.0
+Learns strategy mix preferences from empirical performance,
+not winning-number prediction.
 """
 from datetime import datetime
-import json
 from lotto_ai.core.db import get_session, AdaptiveWeight
 from lotto_ai.core.tracker import PredictionTracker
 from lotto_ai.config import logger
 
 
 class AdaptiveLearner:
-
     def __init__(self):
         self.tracker = PredictionTracker()
         self._initialize_weights()
@@ -21,19 +20,20 @@ class AdaptiveLearner:
             count = session.query(AdaptiveWeight).count()
             if count == 0:
                 defaults = [
-                    ('coverage_optimized', 'coverage_ratio', 1.0, 0.0, 0),
-                    ('coverage_optimized', 'random_ratio', 0.0, 0.0, 0),
+                    ("coverage_optimized", "coverage_ratio", 1.0, 0.0, 0),
+                    ("coverage_optimized", "random_ratio", 0.0, 0.0, 0),
                 ]
                 for strategy, wtype, value, score, n_obs in defaults:
-                    weight = AdaptiveWeight(
-                        updated_at=datetime.now().isoformat(),
-                        strategy_name=strategy,
-                        weight_type=wtype,
-                        weight_value=value,
-                        performance_score=score,
-                        n_observations=n_obs
+                    session.add(
+                        AdaptiveWeight(
+                            updated_at=datetime.now().isoformat(),
+                            strategy_name=strategy,
+                            weight_type=wtype,
+                            weight_value=value,
+                            performance_score=score,
+                            n_observations=n_obs,
+                        )
                     )
-                    session.add(weight)
                 session.commit()
         except Exception as e:
             session.rollback()
@@ -41,51 +41,47 @@ class AdaptiveLearner:
         finally:
             session.close()
 
-    def get_current_weights(self, strategy_name='coverage_optimized'):
+    def get_current_weights(self, strategy_name="coverage_optimized"):
         session = get_session()
         try:
             weights = {}
-            for weight_type in ['coverage_ratio', 'random_ratio']:
-                weight = session.query(AdaptiveWeight).filter_by(
-                    strategy_name=strategy_name,
-                    weight_type=weight_type
-                ).order_by(AdaptiveWeight.updated_at.desc()).first()
-
-                if weight:
+            for weight_type in ["coverage_ratio", "random_ratio"]:
+                row = (
+                    session.query(AdaptiveWeight)
+                    .filter_by(strategy_name=strategy_name, weight_type=weight_type)
+                    .order_by(AdaptiveWeight.updated_at.desc())
+                    .first()
+                )
+                if row:
                     weights[weight_type] = {
-                        'value': weight.weight_value,
-                        'performance': weight.performance_score,
-                        'n_obs': weight.n_observations
+                        "value": row.weight_value,
+                        "performance": row.performance_score,
+                        "n_obs": row.n_observations,
                     }
                 else:
-                    default = 1.0 if weight_type == 'coverage_ratio' else 0.0
                     weights[weight_type] = {
-                        'value': default, 'performance': 0.0, 'n_obs': 0
+                        "value": 1.0 if weight_type == "coverage_ratio" else 0.0,
+                        "performance": 0.0,
+                        "n_obs": 0,
                     }
-
-            # Backward compatibility aliases
-            weights['frequency_ratio'] = weights.get('coverage_ratio',
-                                                      {'value': 1.0})
-            weights['random_ratio'] = weights.get('random_ratio',
-                                                   {'value': 0.0})
             return weights
         finally:
             session.close()
 
-    def update_weights(self, strategy_name='coverage_optimized', window=20):
-        perf = self.tracker.get_strategy_performance(strategy_name, window)
-
-        if not perf or perf['n_predictions'] < 3:
-            logger.info("Not enough data to update weights")
+    def update_weights(self, strategy_name="coverage_optimized", window=50):
+        perf = self.tracker.get_strategy_performance(strategy_name, window=window)
+        if not perf or perf["n_predictions"] < 10:
+            logger.info("Not enough data to update adaptive weights reliably")
             return None
 
         current = self.get_current_weights(strategy_name)
-        vs_random = perf.get('vs_random', 1.0)
-        current_coverage = current.get('coverage_ratio', {}).get('value', 1.0)
+        current_coverage = current["coverage_ratio"]["value"]
+        outperform_rate = perf.get("outperform_random_best_rate", 0.5)
 
-        if vs_random >= 1.05:
+        # Conservative adaptation
+        if outperform_rate >= 0.60:
             new_coverage = min(1.0, current_coverage + 0.05)
-        elif vs_random < 0.90:
+        elif outperform_rate <= 0.40:
             new_coverage = max(0.50, current_coverage - 0.05)
         else:
             new_coverage = current_coverage
@@ -94,49 +90,36 @@ class AdaptiveLearner:
 
         session = get_session()
         try:
-            for wtype, value in [('coverage_ratio', new_coverage),
-                                  ('random_ratio', new_random)]:
-                weight = AdaptiveWeight(
-                    updated_at=datetime.now().isoformat(),
-                    strategy_name=strategy_name,
-                    weight_type=wtype,
-                    weight_value=value,
-                    performance_score=perf['hit_rate_3plus'],
-                    n_observations=perf['n_predictions']
+            for wtype, value in [
+                ("coverage_ratio", new_coverage),
+                ("random_ratio", new_random),
+            ]:
+                session.add(
+                    AdaptiveWeight(
+                        updated_at=datetime.now().isoformat(),
+                        strategy_name=strategy_name,
+                        weight_type=wtype,
+                        weight_value=value,
+                        performance_score=outperform_rate,
+                        n_observations=perf["n_predictions"],
+                    )
                 )
-                session.add(weight)
             session.commit()
 
-            logger.info(f"Weights updated: {new_coverage:.0%} coverage / "
-                        f"{new_random:.0%} random")
+            logger.info(
+                f"Adaptive update: coverage={new_coverage:.2f}, "
+                f"random={new_random:.2f}, outperform_rate={outperform_rate:.2f}"
+            )
 
             return {
-                'frequency_ratio': new_coverage,
-                'random_ratio': new_random,
-                'performance_score': perf['hit_rate_3plus'],
-                'n_observations': perf['n_predictions'],
-                'vs_random': vs_random
+                "coverage_ratio": new_coverage,
+                "random_ratio": new_random,
+                "performance_score": outperform_rate,
+                "n_observations": perf["n_predictions"],
             }
         except Exception as e:
             session.rollback()
             logger.error(f"Error updating weights: {e}")
             return None
-        finally:
-            session.close()
-
-    def get_learning_history(self, strategy_name='coverage_optimized'):
-        session = get_session()
-        try:
-            weights = session.query(AdaptiveWeight).filter_by(
-                strategy_name=strategy_name
-            ).order_by(AdaptiveWeight.updated_at).all()
-
-            return [{
-                'timestamp': w.updated_at,
-                'weight_type': w.weight_type,
-                'value': w.weight_value,
-                'performance': w.performance_score,
-                'n_obs': w.n_observations
-            } for w in weights]
         finally:
             session.close()

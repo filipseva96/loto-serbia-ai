@@ -1,26 +1,26 @@
 """
-Prediction tracking - v3.0
+Prediction / portfolio tracking - v4.0
+Empirical baseline comparison, not theoretical-only.
 """
 from datetime import datetime
 import json
 import numpy as np
+
 from lotto_ai.core.db import get_session, Prediction, PredictionResult, PlayedTicket, Draw
-from lotto_ai.config import logger, PRIZE_TABLE, NUMBERS_PER_DRAW
-from lotto_ai.core.math_engine import match_probability_at_least
+from lotto_ai.config import (
+    logger, PRIZE_TABLE, TICKET_COST,
+    RANDOM_BASELINE_PORTFOLIOS, RNG_SEED
+)
+from lotto_ai.core.coverage_optimizer import generate_random_portfolio
+from lotto_ai.core.math_engine import evaluate_portfolio_once
 
 
 class PredictionTracker:
-    """Track predictions and outcomes"""
-
     def save_prediction(self, target_draw_date, strategy_name, tickets,
-                        model_version="3.0", metadata=None):
+                        model_version="4.0", metadata=None):
         session = get_session()
         try:
-            # Serialize metadata safely
-            if metadata is not None:
-                meta_str = json.dumps(metadata, default=str)
-            else:
-                meta_str = json.dumps({})
+            meta_str = json.dumps(metadata or {}, default=str)
 
             prediction = Prediction(
                 created_at=datetime.now().isoformat(),
@@ -34,9 +34,8 @@ class PredictionTracker:
             )
             session.add(prediction)
             session.commit()
-
             pred_id = prediction.prediction_id
-            logger.info(f"Saved prediction {pred_id} for {target_draw_date}")
+            logger.info(f"Saved portfolio {pred_id} for {target_draw_date}")
             return pred_id
         except Exception as e:
             session.rollback()
@@ -45,7 +44,7 @@ class PredictionTracker:
         finally:
             session.close()
 
-    def evaluate_prediction(self, prediction_id, actual_numbers):
+    def evaluate_prediction(self, prediction_id, actual_numbers, n_random_baselines=200):
         session = get_session()
         try:
             prediction = session.query(Prediction).filter_by(
@@ -56,37 +55,44 @@ class PredictionTracker:
                 return None
 
             tickets = json.loads(prediction.tickets)
-            ticket_matches = [
-                len(set(t) & set(actual_numbers)) for t in tickets
-            ]
+            actual_set = set(actual_numbers)
 
-            best_match = max(ticket_matches)
-            total_matches = sum(ticket_matches)
-            prize_value = self._calculate_prize_value(ticket_matches)
+            outcome = evaluate_portfolio_once(tickets, actual_set, prize_table=PRIZE_TABLE)
+            empirical = self._empirical_random_baseline(
+                portfolio_size=len(tickets),
+                actual_numbers=actual_numbers,
+                n_random_baselines=n_random_baselines,
+            )
+
+            result_payload = {
+                "prediction_id": prediction_id,
+                "best_match": outcome["best_match"],
+                "total_matches": int(sum(outcome["ticket_matches"])),
+                "prize_value": float(outcome["total_prize"]),
+                "ticket_matches": outcome["ticket_matches"],
+                "empirical_random_baseline": empirical,
+            }
 
             result = PredictionResult(
                 prediction_id=prediction_id,
                 actual_numbers=json.dumps(actual_numbers),
                 evaluated_at=datetime.now().isoformat(),
-                best_match=best_match,
-                total_matches=total_matches,
-                prize_value=prize_value,
-                ticket_matches=json.dumps(ticket_matches)
+                best_match=outcome["best_match"],
+                total_matches=int(sum(outcome["ticket_matches"])),
+                prize_value=float(outcome["total_prize"]),
+                ticket_matches=json.dumps(result_payload),
             )
             session.add(result)
 
             prediction.evaluated = True
             session.commit()
 
-            logger.info(f"Evaluated prediction {prediction_id}: "
-                        f"{best_match}/7 best match")
-            return {
-                'prediction_id': prediction_id,
-                'best_match': best_match,
-                'total_matches': total_matches,
-                'prize_value': prize_value,
-                'ticket_matches': ticket_matches
-            }
+            logger.info(
+                f"Evaluated portfolio {prediction_id}: "
+                f"best={outcome['best_match']}/7, "
+                f"percentile_vs_random={empirical['best_match_percentile']:.1f}"
+            )
+            return result_payload
         except Exception as e:
             session.rollback()
             logger.error(f"Error evaluating prediction: {e}")
@@ -98,74 +104,98 @@ class PredictionTracker:
         session = get_session()
         try:
             pending = session.query(Prediction).filter_by(evaluated=False).all()
-
             if not pending:
-                logger.info("Auto-evaluated 0 predictions")
                 return 0
 
             evaluated_count = 0
             for pred in pending:
-                draw = session.query(Draw).filter_by(
-                    draw_date=pred.target_draw_date
-                ).first()
-
+                draw = session.query(Draw).filter_by(draw_date=pred.target_draw_date).first()
                 if draw:
-                    actual_numbers = draw.get_numbers()
-                    self.evaluate_prediction(pred.prediction_id, actual_numbers)
+                    self.evaluate_prediction(pred.prediction_id, draw.get_numbers())
                     evaluated_count += 1
-
-            logger.info(f"Auto-evaluated {evaluated_count} predictions")
             return evaluated_count
         finally:
             session.close()
 
+    def _empirical_random_baseline(self, portfolio_size, actual_numbers, n_random_baselines=200):
+        actual_set = set(actual_numbers)
+        best_matches = []
+        prize_values = []
+
+        for i in range(n_random_baselines):
+            random_portfolio, _ = generate_random_portfolio(
+                n_tickets=portfolio_size,
+                rng_seed=RNG_SEED + i
+            )
+            outcome = evaluate_portfolio_once(random_portfolio, actual_set, prize_table=PRIZE_TABLE)
+            best_matches.append(outcome["best_match"])
+            prize_values.append(outcome["total_prize"])
+
+        return {
+            "n_random_baselines": n_random_baselines,
+            "random_best_match_mean": float(np.mean(best_matches)),
+            "random_best_match_std": float(np.std(best_matches)),
+            "random_prize_mean": float(np.mean(prize_values)),
+            "random_prize_std": float(np.std(prize_values)),
+        }
+
     def get_strategy_performance(self, strategy_name, window=50):
         session = get_session()
         try:
-            results = session.query(PredictionResult).join(Prediction).filter(
-                Prediction.strategy_name == strategy_name,
-                Prediction.evaluated == True
-            ).order_by(PredictionResult.evaluated_at.desc()).limit(window).all()
-
-            if not results:
-                logger.info("Not enough data to track performance")
-                return None
-
-            best_matches = [r.best_match for r in results]
-            total_matches = [r.total_matches for r in results]
-            prize_values = [r.prize_value for r in results]
-
-            # Get portfolio sizes
-            n_tickets_list = []
-            for r in results:
-                pred = session.query(Prediction).filter_by(
-                    prediction_id=r.prediction_id
-                ).first()
-                if pred and pred.portfolio_size:
-                    n_tickets_list.append(pred.portfolio_size)
-
-            hit_3plus = (sum(1 for b in best_matches if b >= 3) / len(results)
-                         if results else 0)
-
-            avg_tickets = float(np.mean(n_tickets_list)) if n_tickets_list else 10
-            expected_3plus_rate = 1 - (
-                (1 - match_probability_at_least(3)) ** avg_tickets
+            rows = (
+                session.query(PredictionResult, Prediction)
+                .join(Prediction, Prediction.prediction_id == PredictionResult.prediction_id)
+                .filter(Prediction.strategy_name == strategy_name, Prediction.evaluated == True)
+                .order_by(PredictionResult.evaluated_at.desc())
+                .limit(window)
+                .all()
             )
 
-            vs_random = (hit_3plus / expected_3plus_rate
-                         if expected_3plus_rate > 0 else 1.0)
+            if not rows:
+                return None
+
+            best_matches = []
+            prize_values = []
+            portfolio_sizes = []
+            random_best_means = []
+            random_prize_means = []
+            outperform_best = 0
+            outperform_prize = 0
+
+            for result, pred in rows:
+                best_matches.append(result.best_match)
+                prize_values.append(result.prize_value or 0.0)
+                portfolio_sizes.append(pred.portfolio_size or 0)
+
+                payload = json.loads(result.ticket_matches)
+                empirical = payload.get("empirical_random_baseline", {})
+                rbm = empirical.get("random_best_match_mean")
+                rpm = empirical.get("random_prize_mean")
+
+                if rbm is not None:
+                    random_best_means.append(rbm)
+                    if result.best_match > rbm:
+                        outperform_best += 1
+
+                if rpm is not None:
+                    random_prize_means.append(rpm)
+                    if (result.prize_value or 0.0) > rpm:
+                        outperform_prize += 1
+
+            n = len(best_matches)
 
             return {
-                'n_predictions': len(results),
-                'avg_best_match': float(np.mean(best_matches)),
-                'avg_total_matches': float(np.mean(total_matches)),
-                'avg_prize_value': float(np.mean(prize_values)),
-                'hit_rate_3plus': hit_3plus,
-                'expected_3plus_rate': expected_3plus_rate,
-                'vs_random': vs_random,
-                'best_ever': max(best_matches),
-                'total_prize_won': sum(prize_values),
-                'avg_tickets_per_prediction': avg_tickets
+                "n_predictions": n,
+                "avg_best_match": float(np.mean(best_matches)),
+                "best_ever": int(max(best_matches)),
+                "hit_rate_3plus": float(sum(1 for x in best_matches if x >= 3) / n),
+                "avg_prize_value": float(np.mean(prize_values)),
+                "total_prize_won": float(np.sum(prize_values)),
+                "avg_tickets_per_prediction": float(np.mean(portfolio_sizes)) if portfolio_sizes else 0.0,
+                "random_best_match_mean": float(np.mean(random_best_means)) if random_best_means else None,
+                "random_prize_mean": float(np.mean(random_prize_means)) if random_prize_means else None,
+                "outperform_random_best_rate": float(outperform_best / n) if n > 0 else 0.0,
+                "outperform_random_prize_rate": float(outperform_prize / n) if n > 0 else 0.0,
             }
         except Exception as e:
             logger.error(f"Error getting performance: {e}")
@@ -173,12 +203,8 @@ class PredictionTracker:
         finally:
             session.close()
 
-    def _calculate_prize_value(self, matches_list):
-        return sum(PRIZE_TABLE.get(m, 0) for m in matches_list)
-
 
 class PlayedTicketsTracker:
-
     def save_played_tickets(self, prediction_id, tickets, draw_date):
         session = get_session()
         try:
@@ -187,7 +213,7 @@ class PlayedTicketsTracker:
                     prediction_id=prediction_id,
                     ticket_numbers=json.dumps(ticket),
                     played_at=datetime.now().isoformat(),
-                    draw_date=draw_date
+                    draw_date=draw_date,
                 )
                 session.add(played)
             session.commit()

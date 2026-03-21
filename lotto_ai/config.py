@@ -1,5 +1,5 @@
 """
-Configuration for Loto Serbia AI - v3.0
+Configuration for Loto Serbia Portfolio Optimizer - v4.0
 """
 import os
 import logging
@@ -13,7 +13,7 @@ IS_RAILWAY = os.getenv("RAILWAY_ENVIRONMENT") is not None
 IS_STREAMLIT_CLOUD = (
     os.getenv("STREAMLIT_SHARING_MODE") is not None or
     os.getenv("STREAMLIT_RUNTIME_ENVIRONMENT") == "cloud" or
-    os.path.exists("/mount/src")  # Streamlit Cloud mounts repos here
+    os.path.exists("/mount/src")
 )
 IS_CLOUD = IS_RAILWAY or IS_STREAMLIT_CLOUD
 
@@ -41,12 +41,8 @@ MAX_NUMBER = 39
 NUMBERS_PER_DRAW = 7
 NUMBER_RANGE = (MIN_NUMBER, MAX_NUMBER)
 VALID_NUMBERS = list(range(MIN_NUMBER, MAX_NUMBER + 1))
-HAS_BONUS = False
-BONUS_MIN = None
-BONUS_MAX = None
-BONUS_RANGE = None
 
-DRAW_DAYS = [1, 4]  # Monday, Wednesday, Thursday
+DRAW_DAYS = [0, 3]  # Monday, Thursday - adjust if needed
 DRAW_HOUR = 21
 DRAW_MINUTE = 0
 DRAW_TIMEZONE = "Europe/Belgrade"
@@ -54,10 +50,12 @@ DRAW_TIMEZONE = "Europe/Belgrade"
 GAME_NAME = "Loto 7/39"
 GAME_COUNTRY = "Serbia"
 GAME_ID = 1
-DRAWS_PER_WEEK = 3
+DRAWS_PER_WEEK = 2
 
 # ============================================================================
 # PRIZE TABLE (RSD)
+# NOTE: This is a simplified fixed table. If official payouts vary by pool,
+# then EV is only approximate unless modeled by historical prize pools.
 # ============================================================================
 PRIZE_TABLE = {
     7: 10_000_000,
@@ -71,7 +69,7 @@ TICKET_COST = 100
 # ============================================================================
 # MATHEMATICAL CONSTANTS
 # ============================================================================
-TOTAL_COMBINATIONS = comb(MAX_NUMBER, NUMBERS_PER_DRAW)  # 15,380,937
+TOTAL_COMBINATIONS = comb(MAX_NUMBER, NUMBERS_PER_DRAW)
 
 def _calc_ev():
     ev = 0.0
@@ -84,7 +82,7 @@ def _calc_ev():
         ev += p * prize
     return ev
 
-_EXPECTED_VALUE = _calc_ev()
+EXPECTED_VALUE_PER_TICKET = _calc_ev()
 
 # ============================================================================
 # SCRAPING
@@ -96,7 +94,7 @@ MAX_RETRIES = 3
 TIMEOUT_SECONDS = 20
 
 # ============================================================================
-# PORTFOLIO
+# PORTFOLIO / OPTIMIZER DEFAULTS
 # ============================================================================
 DEFAULT_TICKETS = 10
 MAX_TICKETS = 50
@@ -104,6 +102,39 @@ MIN_DRAWS_FOR_ANALYSIS = 50
 LOOKBACK_WINDOW = 20
 COVERAGE_MONTE_CARLO_SAMPLES = 1500
 WHEEL_GUARANTEE_DEFAULT = 3
+
+# Score weights for coverage optimizer
+DEFAULT_OPTIMIZER_WEIGHTS = {
+    "w_pairs": 1.0,
+    "w_triples": 0.30,
+    "w_overlap": 3.0,
+    "w_odd_even_penalty": 5.0,
+    "w_sum_penalty": 3.0,
+}
+
+DEFAULT_OPTIMIZER_CONSTRAINTS = {
+    "odd_min": 2,
+    "odd_max": 5,
+    "sum_tolerance_ratio": 0.30,
+    "overlap_penalty_threshold": 5,
+}
+
+# ============================================================================
+# MONTE CARLO / EVALUATION
+# ============================================================================
+PORTFOLIO_SIMULATIONS_DEFAULT = 20000
+PORTFOLIO_SIMULATIONS_FAST = 5000
+RANDOM_BASELINE_PORTFOLIOS = 500
+BACKTEST_RANDOM_BASELINE_PORTFOLIOS = 1000
+BACKTEST_BOOTSTRAP_SAMPLES = 5000
+RNG_SEED = 42
+
+# ============================================================================
+# APP BRANDING
+# ============================================================================
+APP_TITLE = "Loto Serbia Portfolio Optimizer"
+APP_SUBTITLE = "Coverage Optimization, Wheeling, and Honest Mathematics"
+APP_VERSION = "4.0"
 
 # ============================================================================
 # LOGGING
@@ -124,8 +155,5 @@ logger.info(f"Data directory: {DATA_DIR}")
 logger.info(f"Database path: {DB_PATH}")
 logger.info(f"Number range: {NUMBER_RANGE}")
 logger.info(f"Total combinations: {TOTAL_COMBINATIONS:,}")
-logger.info(f"Expected value per ticket: {_EXPECTED_VALUE:.2f} RSD")
+logger.info(f"Expected value per ticket: {EXPECTED_VALUE_PER_TICKET:.2f} RSD")
 logger.info(f"Draw days: {DRAW_DAYS}")
-logger.info(f"Has bonus number: {HAS_BONUS}")
-if not SCRAPING_ENABLED:
-    logger.warning("Scraping is DISABLED (Cloud environment)")
