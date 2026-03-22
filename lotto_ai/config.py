@@ -43,7 +43,7 @@ NUMBER_RANGE = (MIN_NUMBER, MAX_NUMBER)
 VALID_NUMBERS = list(range(MIN_NUMBER, MAX_NUMBER + 1))
 
 DRAW_DAYS = [1, 4]  # Monday, Thursday - adjust if needed
-DRAW_HOUR = 20s
+DRAW_HOUR = 20
 DRAW_MINUTE = 0
 DRAW_TIMEZONE = "Europe/Belgrade"
 
